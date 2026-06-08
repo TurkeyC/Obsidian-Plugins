@@ -1,5 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import AgeEncryptPlugin from '../../main';
+import { MigrationModal } from './MigrationModal';
 
 export class AgeEncryptSettingTab extends PluginSettingTab {
     plugin: AgeEncryptPlugin;
@@ -76,6 +77,28 @@ export class AgeEncryptSettingTab extends PluginSettingTab {
                     this.plugin.settings.excludeFrontmatter = value;
                     await this.plugin.saveSettings();
                 }));
+
+        // ── 凭据迁移 ──
+        containerEl.createEl('hr');
+        containerEl.createEl('h3', { text: '凭据迁移' });
+
+        const migrateDesc = containerEl.createDiv();
+        migrateDesc.style.fontSize = '0.85em';
+        migrateDesc.style.color = 'var(--text-muted)';
+        migrateDesc.style.marginBottom = '8px';
+        migrateDesc.setText('更换密码或密钥后，已有加密文件仍使用旧凭据。点击下方按钮重新加密整个仓库中的所有内容。');
+
+        const migrateBtn = containerEl.createEl('button', { text: '打开迁移向导', cls: 'mod-cta' });
+        migrateBtn.onclick = () => {
+            const modal = new MigrationModal(
+                this.app,
+                this.plugin.encryptionService,
+                this.plugin.passwordManager,
+                this.plugin.settings,
+                this.plugin
+            );
+            modal.open();
+        };
     }
 
     // ── 密钥模式 UI ──
@@ -290,8 +313,6 @@ export class AgeEncryptSettingTab extends PluginSettingTab {
             warnEl.setText('密码已保存到 data.json。任何人能访问您的 vault 目录即可读取此密码。');
         }
     }
-
-    // ── 状态更新 ──
 
     private updatePasswordStatus(): void {
         if (!this.statusEl) return;

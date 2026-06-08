@@ -61,7 +61,7 @@ __export(main_exports, {
   default: () => AgeEncryptPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // node_modules/@scure/base/lib/esm/index.js
 function isBytes(a) {
@@ -2935,8 +2935,419 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/ui/SettingsTab.ts
+var import_obsidian2 = require("obsidian");
+
+// src/ui/MigrationModal.ts
 var import_obsidian = require("obsidian");
-var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
+var MigrationModal = class extends import_obsidian.Modal {
+  constructor(app, encryptionService, passwordManager, settings, plugin) {
+    super(app);
+    this.encryptionService = encryptionService;
+    this.passwordManager = passwordManager;
+    this.settings = settings;
+    this.plugin = plugin;
+    this.step = "choose-mode";
+    // 旧凭证
+    this.oldCredentialType = "password";
+    this.oldPassword = "";
+    this.oldIdentity = "";
+    // 扫描结果
+    this.scanResults = [];
+    this.totalBlocksFound = 0;
+    this.totalBlocksToMigrate = 0;
+    // 执行结果
+    this.migratedCount = 0;
+    this.failedCount = 0;
+    this.skipCount = 0;
+    this.titleEl.setText("\u51ED\u636E\u8FC1\u79FB\u5411\u5BFC");
+  }
+  onOpen() {
+    this.stepContainer = this.contentEl;
+    this.renderStep();
+  }
+  renderStep() {
+    this.stepContainer.empty();
+    switch (this.step) {
+      case "choose-mode":
+        this.renderChooseMode();
+        break;
+      case "enter-old":
+        this.renderEnterOld();
+        break;
+      case "scanning":
+        this.renderScanning();
+        break;
+      case "confirm":
+        this.renderConfirm();
+        break;
+      case "executing":
+        this.renderExecuting();
+        break;
+      case "results":
+        this.renderResults();
+        break;
+    }
+  }
+  // ── 步骤 1: 选择旧凭证类型 ──
+  renderChooseMode() {
+    this.stepContainer.createEl("h2", { text: "\u51ED\u636E\u8FC1\u79FB" });
+    this.stepContainer.createEl("p", {
+      text: "\u6B64\u5411\u5BFC\u5C06\u626B\u63CF\u6574\u4E2A\u4ED3\u5E93\uFF0C\u627E\u5230\u6240\u6709\u4F7F\u7528\u65E7\u51ED\u636E\u52A0\u5BC6\u7684\u5185\u5BB9\uFF0C\u5E76\u91CD\u65B0\u52A0\u5BC6\u4E3A\u65B0\u51ED\u636E\u3002"
+    });
+    const infoBox = this.stepContainer.createDiv();
+    infoBox.style.background = "var(--background-secondary)";
+    infoBox.style.padding = "12px";
+    infoBox.style.borderRadius = "6px";
+    infoBox.style.marginBottom = "16px";
+    infoBox.createEl("p", {
+      text: "\u5F53\u524D\u52A0\u5BC6\u65B9\u5F0F\uFF1A",
+      cls: "mod-cta"
+    });
+    const modeText = this.settings.encryptionMode === "key" ? `\u5BC6\u94A5\u6A21\u5F0F\uFF08\u516C\u94A5: ${(this.settings.recipientKey || "").slice(0, 20)}...\uFF09` : "\u5BC6\u7801\u6A21\u5F0F";
+    infoBox.createEl("p", { text: modeText, cls: "age-encrypt-hint" });
+    const hasNewCred = this.passwordManager.hasAnyCredential();
+    if (!hasNewCred) {
+      const warnEl = this.stepContainer.createDiv();
+      warnEl.style.color = "var(--text-warning)";
+      warnEl.style.padding = "8px";
+      warnEl.style.marginBottom = "12px";
+      warnEl.style.background = "var(--background-secondary)";
+      warnEl.style.borderRadius = "4px";
+      warnEl.setText("\u8B66\u544A\uFF1A\u5C1A\u672A\u8BBE\u7F6E\u65B0\u51ED\u636E\uFF08\u5BC6\u7801\u6216\u5BC6\u94A5\uFF09\u3002\u8BF7\u5728\u8BBE\u7F6E\u9875\u9762\u5148\u914D\u7F6E\u597D\u65B0\u51ED\u636E\uFF0C\u518D\u8FDB\u884C\u8FC1\u79FB\u3002");
+    }
+    this.stepContainer.createEl("p", { text: "\u4F60\u7684\u65E7\u52A0\u5BC6\u51ED\u636E\u662F\u54EA\u79CD\u7C7B\u578B\uFF1F" });
+    const btnGroup = this.stepContainer.createDiv();
+    btnGroup.style.display = "flex";
+    btnGroup.style.gap = "12px";
+    btnGroup.style.marginTop = "12px";
+    const pwBtn = btnGroup.createEl("button", { text: "\u5BC6\u7801", cls: "mod-cta" });
+    pwBtn.onclick = () => {
+      this.oldCredentialType = "password";
+      this.step = "enter-old";
+      this.renderStep();
+    };
+    const keyBtn = btnGroup.createEl("button", { text: "\u5BC6\u94A5\u6587\u4EF6", cls: "mod-cta" });
+    keyBtn.onclick = () => {
+      this.oldCredentialType = "key";
+      this.step = "enter-old";
+      this.renderStep();
+    };
+    const cancelBtn = this.stepContainer.createEl("button", { text: "\u53D6\u6D88" });
+    cancelBtn.style.marginTop = "16px";
+    cancelBtn.onclick = () => this.close();
+  }
+  // ── 步骤 2: 输入旧凭据 ──
+  renderEnterOld() {
+    this.stepContainer.createEl("h2", {
+      text: this.oldCredentialType === "password" ? "\u8F93\u5165\u65E7\u5BC6\u7801" : "\u8F93\u5165\u65E7\u79C1\u94A5"
+    });
+    if (this.oldCredentialType === "password") {
+      this.stepContainer.createEl("p", {
+        text: "\u8F93\u5165\u4E4B\u524D\u7528\u4E8E\u52A0\u5BC6\u7684\u65E7\u5BC6\u7801\u3002\u6B64\u5BC6\u7801\u4E0D\u4F1A\u4FDD\u5B58\u5230\u78C1\u76D8\uFF0C\u4EC5\u7528\u4E8E\u672C\u6B21\u8FC1\u79FB\u8FC7\u7A0B\u3002"
+      });
+      const pwInput = this.stepContainer.createEl("input", {
+        attr: { type: "password", placeholder: "\u8F93\u5165\u65E7\u5BC6\u7801" }
+      });
+      pwInput.style.width = "100%";
+      pwInput.style.marginTop = "8px";
+      pwInput.style.padding = "8px";
+      pwInput.onchange = () => {
+        this.oldPassword = pwInput.value;
+      };
+      pwInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter")
+          this.startScan();
+      });
+      const confirmInput = this.stepContainer.createEl("input", {
+        attr: { type: "password", placeholder: "\u786E\u8BA4\u65E7\u5BC6\u7801" }
+      });
+      confirmInput.style.width = "100%";
+      confirmInput.style.marginTop = "8px";
+      confirmInput.style.padding = "8px";
+      const nextBtn = this.createNextButton();
+      nextBtn.onclick = () => {
+        if (!pwInput.value) {
+          new import_obsidian.Notice("\u8BF7\u8F93\u5165\u65E7\u5BC6\u7801");
+          return;
+        }
+        if (pwInput.value !== confirmInput.value) {
+          new import_obsidian.Notice("\u4E24\u6B21\u5BC6\u7801\u4E0D\u4E00\u81F4");
+          return;
+        }
+        this.oldPassword = pwInput.value;
+        this.startScan();
+      };
+    } else {
+      this.stepContainer.createEl("p", {
+        text: "\u7C98\u8D34\u65E7\u7684 AGE-SECRET-KEY-1 \u79C1\u94A5\u3002\u6B64\u5BC6\u94A5\u4E0D\u4F1A\u4FDD\u5B58\u5230\u78C1\u76D8\uFF0C\u4EC5\u7528\u4E8E\u672C\u6B21\u8FC1\u79FB\u8FC7\u7A0B\u3002"
+      });
+      const keyInput = this.stepContainer.createEl("textarea", {
+        attr: { placeholder: "\u7C98\u8D34 AGE-SECRET-KEY-1... \u79C1\u94A5" }
+      });
+      keyInput.style.width = "100%";
+      keyInput.style.minHeight = "60px";
+      keyInput.style.marginTop = "8px";
+      keyInput.style.fontFamily = "var(--font-monospace)";
+      keyInput.style.fontSize = "12px";
+      const nextBtn = this.createNextButton();
+      nextBtn.onclick = () => {
+        const val = keyInput.value.trim();
+        if (!val.startsWith("AGE-SECRET-KEY-1")) {
+          new import_obsidian.Notice("\u79C1\u94A5\u683C\u5F0F\u65E0\u6548\uFF0C\u5E94\u4EE5 AGE-SECRET-KEY-1 \u5F00\u5934");
+          return;
+        }
+        this.oldIdentity = val;
+        this.startScan();
+      };
+    }
+    const backBtn = this.stepContainer.createEl("button", { text: "\u8FD4\u56DE" });
+    backBtn.style.marginTop = "8px";
+    backBtn.onclick = () => {
+      this.step = "choose-mode";
+      this.renderStep();
+    };
+  }
+  createNextButton() {
+    const btn = this.stepContainer.createEl("button", { text: "\u4E0B\u4E00\u6B65", cls: "mod-cta" });
+    btn.style.marginTop = "12px";
+    return btn;
+  }
+  // ── 步骤 3: 扫描仓库 ──
+  startScan() {
+    return __async(this, null, function* () {
+      this.step = "scanning";
+      this.renderStep();
+      const progressText = this.stepContainer.createEl("p", { text: "\u6B63\u5728\u626B\u63CF\u4ED3\u5E93\uFF0C\u67E5\u627E\u52A0\u5BC6\u5757..." });
+      const progressBar = this.stepContainer.createEl("progress");
+      progressBar.style.width = "100%";
+      progressBar.style.marginTop = "8px";
+      const files = this.app.vault.getMarkdownFiles();
+      progressBar.max = files.length;
+      progressBar.value = 0;
+      this.scanResults = [];
+      this.totalBlocksFound = 0;
+      this.totalBlocksToMigrate = 0;
+      const password = this.oldCredentialType === "password" ? this.oldPassword : void 0;
+      const identity = this.oldCredentialType === "key" ? this.oldIdentity : void 0;
+      for (let i = 0; i < files.length; i++) {
+        progressBar.value = i + 1;
+        progressText.setText(`\u6B63\u5728\u626B\u63CF: ${files[i].path} (${i + 1}/${files.length})`);
+        try {
+          const result = yield this.scanFile(files[i], password, identity);
+          if (result.blocks.length > 0 || result.errors.length > 0) {
+            this.scanResults.push(result);
+            this.totalBlocksFound += result.blocks.length + result.errors.length;
+            this.totalBlocksToMigrate += result.blocks.length;
+          }
+        } catch (e) {
+        }
+      }
+      this.step = "confirm";
+      this.renderStep();
+    });
+  }
+  scanFile(file, oldPassword, oldIdentity) {
+    return __async(this, null, function* () {
+      const content = yield this.app.vault.read(file);
+      const lines = content.split("\n");
+      const blocks = [];
+      const errors = [];
+      const ageBlockRegex = /```age[\s\S]*?```/g;
+      let match;
+      let lineIdx = 0;
+      while (lineIdx < lines.length) {
+        if (lines[lineIdx].trimStart().startsWith("```age")) {
+          const blockStart = lineIdx;
+          lineIdx++;
+          while (lineIdx < lines.length && lines[lineIdx].trimStart() !== "```") {
+            lineIdx++;
+          }
+          const blockEnd = lineIdx;
+          const blockSource = lines.slice(blockStart, blockEnd + 1).join("\n");
+          try {
+            const { content: encryptedContent, hint } = this.encryptionService.parseEncryptedBlock(blockSource);
+            const decrypted = yield this.encryptionService.decrypt(
+              encryptedContent,
+              oldPassword,
+              oldIdentity
+            );
+            blocks.push({ lineStart: blockStart, lineEnd: blockEnd, decrypted, hint });
+          } catch (e) {
+            errors.push({ lineStart: blockStart, error: "\u65E0\u6CD5\u89E3\u5BC6\uFF08\u51ED\u636E\u4E0D\u5339\u914D\u6216\u6570\u636E\u635F\u574F\uFF09" });
+          }
+        }
+        lineIdx++;
+      }
+      return { file, blocks, errors };
+    });
+  }
+  // ── 步骤 4: 确认 ──
+  renderConfirm() {
+    this.stepContainer.createEl("h2", { text: "\u626B\u63CF\u5B8C\u6210" });
+    const summary = this.stepContainer.createDiv();
+    summary.style.background = "var(--background-secondary)";
+    summary.style.padding = "12px";
+    summary.style.borderRadius = "6px";
+    summary.style.marginBottom = "16px";
+    summary.createEl("p", { text: `\u6D89\u53CA\u6587\u4EF6: ${this.scanResults.length} \u4E2A` });
+    summary.createEl("p", { text: `\u52A0\u5BC6\u5757\u603B\u8BA1: ${this.totalBlocksFound} \u4E2A` });
+    summary.createEl("p", {
+      text: `\u5C06\u91CD\u65B0\u52A0\u5BC6: ${this.totalBlocksToMigrate} \u4E2A`,
+      cls: this.totalBlocksToMigrate > 0 ? "mod-cta" : void 0
+    });
+    summary.createEl("p", {
+      text: `\u65E0\u6CD5\u89E3\u5BC6\uFF08\u8DF3\u8FC7\uFF09: ${this.totalBlocksFound - this.totalBlocksToMigrate} \u4E2A`
+    });
+    const errorFiles = this.scanResults.filter((r) => r.errors.length > 0);
+    if (errorFiles.length > 0) {
+      const errBox = this.stepContainer.createDiv();
+      errBox.style.color = "var(--text-warning)";
+      errBox.style.fontSize = "0.9em";
+      errBox.style.marginBottom = "12px";
+      errBox.createEl("p", { text: "\u4EE5\u4E0B\u6587\u4EF6\u7684\u52A0\u5BC6\u5757\u65E0\u6CD5\u89E3\u5BC6\uFF08\u53EF\u80FD\u5DF2\u4F7F\u7528\u65B0\u51ED\u636E\u52A0\u5BC6\uFF09\uFF1A" });
+      for (const rf of errorFiles.slice(0, 10)) {
+        errBox.createEl("p", {
+          text: `  ${rf.file.path}: ${rf.errors.length} \u4E2A\u5757`
+        });
+      }
+      if (errorFiles.length > 10) {
+        errBox.createEl("p", { text: `  ...\u53CA\u5176\u4ED6 ${errorFiles.length - 10} \u4E2A\u6587\u4EF6` });
+      }
+    }
+    if (this.totalBlocksToMigrate === 0) {
+      this.stepContainer.createEl("p", {
+        text: "\u6CA1\u6709\u627E\u5230\u53EF\u4EE5\u8FC1\u79FB\u7684\u52A0\u5BC6\u5757\u3002\u8BF7\u786E\u8BA4\u65E7\u51ED\u636E\u662F\u5426\u6B63\u786E\u3002",
+        cls: "age-encrypt-error-block"
+      });
+      const closeBtn = this.stepContainer.createEl("button", { text: "\u5173\u95ED" });
+      closeBtn.onclick = () => this.close();
+      return;
+    }
+    const warning = this.stepContainer.createDiv();
+    warning.style.color = "var(--text-warning)";
+    warning.style.padding = "8px";
+    warning.style.marginBottom = "8px";
+    warning.style.background = "var(--background-secondary)";
+    warning.style.borderRadius = "4px";
+    warning.setText("\u8B66\u544A\uFF1A\u6B64\u64CD\u4F5C\u5C06\u4FEE\u6539\u4ED3\u5E93\u4E2D\u7684\u6587\u4EF6\u3002\u5EFA\u8BAE\u5148\u5907\u4EFD vault\u3002");
+    const btnRow = this.stepContainer.createDiv();
+    btnRow.style.display = "flex";
+    btnRow.style.gap = "12px";
+    btnRow.style.marginTop = "12px";
+    const execBtn = btnRow.createEl("button", { text: "\u5F00\u59CB\u8FC1\u79FB", cls: "mod-cta" });
+    execBtn.onclick = () => this.executeMigration();
+    const cancelBtn = btnRow.createEl("button", { text: "\u53D6\u6D88" });
+    cancelBtn.onclick = () => this.close();
+  }
+  // ── 步骤 5: 执行迁移 ──
+  executeMigration() {
+    return __async(this, null, function* () {
+      this.step = "executing";
+      this.renderStep();
+      const progressText = this.stepContainer.createEl("p", { text: "\u6B63\u5728\u91CD\u65B0\u52A0\u5BC6..." });
+      const progressBar = this.stepContainer.createEl("progress");
+      progressBar.style.width = "100%";
+      progressBar.style.marginTop = "8px";
+      progressBar.max = this.totalBlocksToMigrate;
+      progressBar.value = 0;
+      this.migratedCount = 0;
+      this.failedCount = 0;
+      this.skipCount = 0;
+      const newPassword = this.passwordManager.getPassword() || void 0;
+      const newRecipient = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
+      let processedBlocks = 0;
+      for (const fileResult of this.scanResults) {
+        if (fileResult.blocks.length === 0)
+          continue;
+        progressText.setText(`\u6B63\u5728\u5904\u7406: ${fileResult.file.path}`);
+        try {
+          let content = yield this.app.vault.read(fileResult.file);
+          let modified = false;
+          const sortedBlocks = [...fileResult.blocks].sort((a, b) => b.lineStart - a.lineStart);
+          for (const block of sortedBlocks) {
+            try {
+              const encrypted = yield this.encryptionService.encrypt(block.decrypted, {
+                password: newPassword,
+                recipient: newRecipient
+              });
+              const newBlockText = this.encryptionService.formatEncryptedBlock(encrypted, block.hint);
+              const contentLines = content.split("\n");
+              contentLines.splice(block.lineStart, block.lineEnd - block.lineStart + 1, newBlockText);
+              content = contentLines.join("\n");
+              modified = true;
+              this.migratedCount++;
+            } catch (e) {
+              this.failedCount++;
+            }
+            processedBlocks++;
+            progressBar.value = processedBlocks;
+          }
+          if (modified) {
+            yield this.app.vault.modify(fileResult.file, content);
+          }
+        } catch (e) {
+          this.failedCount += fileResult.blocks.length;
+          processedBlocks += fileResult.blocks.length;
+          progressBar.value = processedBlocks;
+        }
+      }
+      this.step = "results";
+      this.renderStep();
+    });
+  }
+  // ── 步骤 6: 结果 ──
+  renderResults() {
+    this.stepContainer.createEl("h2", { text: "\u8FC1\u79FB\u5B8C\u6210" });
+    const resultBox = this.stepContainer.createDiv();
+    resultBox.style.background = "var(--background-secondary)";
+    resultBox.style.padding = "12px";
+    resultBox.style.borderRadius = "6px";
+    resultBox.style.marginBottom = "16px";
+    resultBox.createEl("p", {
+      text: `\u6210\u529F\u8FC1\u79FB: ${this.migratedCount} \u4E2A\u5757`,
+      cls: this.migratedCount > 0 ? "mod-cta" : void 0
+    });
+    if (this.failedCount > 0) {
+      resultBox.createEl("p", {
+        text: `\u5931\u8D25: ${this.failedCount} \u4E2A\u5757`,
+        cls: "age-encrypt-error-block"
+      });
+    }
+    if (this.failedCount > 0) {
+      const tip = this.stepContainer.createDiv();
+      tip.style.color = "var(--text-warning)";
+      tip.style.fontSize = "0.9em";
+      tip.style.marginTop = "8px";
+      tip.setText("\u90E8\u5206\u5757\u8FC1\u79FB\u5931\u8D25\u3002\u8BF7\u786E\u8BA4\u65B0\u51ED\u636E\u662F\u5426\u6B63\u786E\u4E14\u5DF2\u52A0\u8F7D\uFF0C\u7136\u540E\u91CD\u65B0\u8FD0\u884C\u8FC1\u79FB\u5411\u5BFC\u3002");
+    }
+    const note = this.stepContainer.createDiv();
+    note.style.fontSize = "0.85em";
+    note.style.color = "var(--text-muted)";
+    note.style.marginTop = "12px";
+    note.setText("\u63D0\u793A\uFF1A\u65E7\u51ED\u636E\u4ECD\u53EF\u7528\u4E8E\u89E3\u5BC6\u5C1A\u672A\u8FC1\u79FB\u7684\u6587\u4EF6\u3002\u5982\u9700\u5B8C\u5168\u5207\u6362\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C\u6B64\u5411\u5BFC\u3002");
+    const closeBtn = this.stepContainer.createEl("button", { text: "\u5B8C\u6210", cls: "mod-cta" });
+    closeBtn.style.marginTop = "16px";
+    closeBtn.onclick = () => {
+      this.plugin.decryptCache.clear();
+      this.plugin.readingViewProcessor.rerenderAll();
+      this.plugin.cm6Extension.invalidateDecryptions();
+      this.close();
+    };
+  }
+  // ── 扫描中和执行中的占位渲染 ──
+  renderScanning() {
+    this.stepContainer.createEl("h2", { text: "\u6B63\u5728\u626B\u63CF..." });
+  }
+  renderExecuting() {
+    this.stepContainer.createEl("h2", { text: "\u6B63\u5728\u6267\u884C\u8FC1\u79FB..." });
+  }
+  onClose() {
+    this.stepContainer.empty();
+  }
+};
+
+// src/ui/SettingsTab.ts
+var AgeEncryptSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.passwordInput = "";
@@ -2950,7 +3361,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Age Encrypt \u8BBE\u7F6E" });
     containerEl.createEl("h3", { text: "\u52A0\u5BC6\u65B9\u5F0F" });
-    new import_obsidian.Setting(containerEl).setName("\u52A0\u5BC6\u6A21\u5F0F").setDesc("\u9009\u62E9\u4F7F\u7528\u5BC6\u7801\u52A0\u5BC6\u8FD8\u662F\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u3002\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u66F4\u5B89\u5168\uFF0C\u4E14\u4E0D\u53D7\u91CD\u542F\u5F71\u54CD\u3002").addDropdown((dropdown) => dropdown.addOption("password", "\u5BC6\u7801\u52A0\u5BC6").addOption("key", "\u5BC6\u94A5\u52A0\u5BC6\uFF08\u63A8\u8350\uFF09").setValue(this.plugin.settings.encryptionMode).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("\u52A0\u5BC6\u6A21\u5F0F").setDesc("\u9009\u62E9\u4F7F\u7528\u5BC6\u7801\u52A0\u5BC6\u8FD8\u662F\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u3002\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u66F4\u5B89\u5168\uFF0C\u4E14\u4E0D\u53D7\u91CD\u542F\u5F71\u54CD\u3002").addDropdown((dropdown) => dropdown.addOption("password", "\u5BC6\u7801\u52A0\u5BC6").addOption("key", "\u5BC6\u94A5\u52A0\u5BC6\uFF08\u63A8\u8350\uFF09").setValue(this.plugin.settings.encryptionMode).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.encryptionMode = value;
       yield this.plugin.saveSettings();
       this.display();
@@ -2962,18 +3373,36 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     }
     containerEl.createEl("hr");
     containerEl.createEl("h3", { text: "\u89E3\u5BC6\u8BBE\u7F6E" });
-    new import_obsidian.Setting(containerEl).setName("\u81EA\u52A8\u89E3\u5BC6").setDesc("\u5BC6\u7801\u6216\u5BC6\u94A5\u5DF2\u52A0\u8F7D\u65F6\uFF0C\u81EA\u52A8\u89E3\u5BC6\u6240\u6709\u52A0\u5BC6\u5757").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoDecryptOnLoad).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("\u81EA\u52A8\u89E3\u5BC6").setDesc("\u5BC6\u7801\u6216\u5BC6\u94A5\u5DF2\u52A0\u8F7D\u65F6\uFF0C\u81EA\u52A8\u89E3\u5BC6\u6240\u6709\u52A0\u5BC6\u5757").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoDecryptOnLoad).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.autoDecryptOnLoad = value;
       yield this.plugin.saveSettings();
     })));
-    new import_obsidian.Setting(containerEl).setName("\u663E\u793A\u7F16\u8F91\u63D0\u793A").setDesc("\u60AC\u505C\u89E3\u5BC6\u540E\u7684\u5185\u5BB9\u65F6\uFF0C\u663E\u793A\u4E00\u4E2A\u5FAE\u5C0F\u7684\u7F16\u8F91\u6309\u94AE").addToggle((toggle) => toggle.setValue(this.plugin.settings.showEditIndicator).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("\u663E\u793A\u7F16\u8F91\u63D0\u793A").setDesc("\u60AC\u505C\u89E3\u5BC6\u540E\u7684\u5185\u5BB9\u65F6\uFF0C\u663E\u793A\u4E00\u4E2A\u5FAE\u5C0F\u7684\u7F16\u8F91\u6309\u94AE").addToggle((toggle) => toggle.setValue(this.plugin.settings.showEditIndicator).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.showEditIndicator = value;
       yield this.plugin.saveSettings();
     })));
-    new import_obsidian.Setting(containerEl).setName("\u6392\u9664 Frontmatter").setDesc("\u52A0\u5BC6\u6574\u6587\u4EF6\u65F6\uFF0C\u4E0D\u52A0\u5BC6 YAML \u524D\u7F6E\u5143\u6570\u636E").addToggle((toggle) => toggle.setValue(this.plugin.settings.excludeFrontmatter).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("\u6392\u9664 Frontmatter").setDesc("\u52A0\u5BC6\u6574\u6587\u4EF6\u65F6\uFF0C\u4E0D\u52A0\u5BC6 YAML \u524D\u7F6E\u5143\u6570\u636E").addToggle((toggle) => toggle.setValue(this.plugin.settings.excludeFrontmatter).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.excludeFrontmatter = value;
       yield this.plugin.saveSettings();
     })));
+    containerEl.createEl("hr");
+    containerEl.createEl("h3", { text: "\u51ED\u636E\u8FC1\u79FB" });
+    const migrateDesc = containerEl.createDiv();
+    migrateDesc.style.fontSize = "0.85em";
+    migrateDesc.style.color = "var(--text-muted)";
+    migrateDesc.style.marginBottom = "8px";
+    migrateDesc.setText("\u66F4\u6362\u5BC6\u7801\u6216\u5BC6\u94A5\u540E\uFF0C\u5DF2\u6709\u52A0\u5BC6\u6587\u4EF6\u4ECD\u4F7F\u7528\u65E7\u51ED\u636E\u3002\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u91CD\u65B0\u52A0\u5BC6\u6574\u4E2A\u4ED3\u5E93\u4E2D\u7684\u6240\u6709\u5185\u5BB9\u3002");
+    const migrateBtn = containerEl.createEl("button", { text: "\u6253\u5F00\u8FC1\u79FB\u5411\u5BFC", cls: "mod-cta" });
+    migrateBtn.onclick = () => {
+      const modal = new MigrationModal(
+        this.app,
+        this.plugin.encryptionService,
+        this.plugin.passwordManager,
+        this.plugin.settings,
+        this.plugin
+      );
+      modal.open();
+    };
   }
   // ── 密钥模式 UI ──
   renderKeyModeUI(containerEl) {
@@ -3009,7 +3438,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
       var _a;
       const identity = (_a = this.identityInputEl) == null ? void 0 : _a.value.trim();
       if (!identity || !identity.startsWith("AGE-SECRET-KEY-1")) {
-        new import_obsidian.Notice("\u79C1\u94A5\u683C\u5F0F\u65E0\u6548\uFF0C\u5E94\u4EE5 AGE-SECRET-KEY-1 \u5F00\u5934");
+        new import_obsidian2.Notice("\u79C1\u94A5\u683C\u5F0F\u65E0\u6548\uFF0C\u5E94\u4EE5 AGE-SECRET-KEY-1 \u5F00\u5934");
         return;
       }
       try {
@@ -3018,9 +3447,9 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
         if (this.identityInputEl)
           this.identityInputEl.value = "";
         this.updateKeyStatus();
-        new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u52A0\u8F7D\uFF08\u5185\u5B58\u4E2D\uFF0C\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
+        new import_obsidian2.Notice("\u79C1\u94A5\u5DF2\u52A0\u8F7D\uFF08\u5185\u5B58\u4E2D\uFF0C\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
       } catch (e) {
-        new import_obsidian.Notice("\u79C1\u94A5\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u540E\u91CD\u8BD5");
+        new import_obsidian2.Notice("\u79C1\u94A5\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u540E\u91CD\u8BD5");
       }
     });
     const genBtn = keyBtnRow.createEl("button", { text: "\u751F\u6210\u65B0\u5BC6\u94A5\u5BF9" });
@@ -3057,12 +3486,12 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
         copyBtn.style.marginTop = "8px";
         copyBtn.onclick = () => {
           navigator.clipboard.writeText(pair.identity);
-          new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u590D\u5236");
+          new import_obsidian2.Notice("\u79C1\u94A5\u5DF2\u590D\u5236");
         };
         this.updateKeyStatus();
-        new import_obsidian.Notice("\u5BC6\u94A5\u5BF9\u5DF2\u751F\u6210");
+        new import_obsidian2.Notice("\u5BC6\u94A5\u5BF9\u5DF2\u751F\u6210");
       } catch (e) {
-        new import_obsidian.Notice("\u751F\u6210\u5BC6\u94A5\u5BF9\u5931\u8D25");
+        new import_obsidian2.Notice("\u751F\u6210\u5BC6\u94A5\u5BF9\u5931\u8D25");
       }
     });
     if (this.plugin.settings.recipientKey) {
@@ -3076,7 +3505,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
       clearRecipBtn.onclick = () => __async(this, null, function* () {
         this.plugin.settings.recipientKey = void 0;
         yield this.plugin.saveSettings();
-        new import_obsidian.Notice("\u516C\u94A5\u5DF2\u6E05\u9664");
+        new import_obsidian2.Notice("\u516C\u94A5\u5DF2\u6E05\u9664");
         this.display();
       });
     }
@@ -3084,7 +3513,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     clearIdentityBtn.onclick = () => {
       this.plugin.passwordManager.clearIdentity();
       this.updateKeyStatus();
-      new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u4ECE\u5185\u5B58\u6E05\u9664");
+      new import_obsidian2.Notice("\u79C1\u94A5\u5DF2\u4ECE\u5185\u5B58\u6E05\u9664");
     };
   }
   // ── 密码模式 UI ──
@@ -3092,7 +3521,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     this.statusEl = containerEl.createDiv();
     this.statusEl.style.marginBottom = "8px";
     this.updatePasswordStatus();
-    const passwordSetting = new import_obsidian.Setting(containerEl).setName("\u4E3B\u5BC6\u7801").setDesc("\u8BBE\u7F6E\u7528\u4E8E\u52A0\u5BC6\u548C\u89E3\u5BC6\u7684\u4E3B\u5BC6\u7801\u3002\u5BC6\u7801\u4EC5\u5B58\u50A8\u5728\u5185\u5B58\u4E2D\uFF08\u9664\u975E\u52FE\u9009\u4E0B\u65B9\u4FDD\u5B58\u9009\u9879\uFF09\u3002").addText((text) => {
+    const passwordSetting = new import_obsidian2.Setting(containerEl).setName("\u4E3B\u5BC6\u7801").setDesc("\u8BBE\u7F6E\u7528\u4E8E\u52A0\u5BC6\u548C\u89E3\u5BC6\u7684\u4E3B\u5BC6\u7801\u3002\u5BC6\u7801\u4EC5\u5B58\u50A8\u5728\u5185\u5B58\u4E2D\uFF08\u9664\u975E\u52FE\u9009\u4E0B\u65B9\u4FDD\u5B58\u9009\u9879\uFF09\u3002").addText((text) => {
       text.setPlaceholder("\u8F93\u5165\u4E3B\u5BC6\u7801").onChange((value) => this.passwordInput = value);
       text.inputEl.type = "password";
       this.passwordInputEl = text.inputEl;
@@ -3111,7 +3540,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
           this.passwordInputEl.value = "";
         this.passwordInput = "";
         this.updatePasswordStatus();
-        new import_obsidian.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E\uFF08\u5185\u5B58\u4E2D\uFF0C\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
+        new import_obsidian2.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E\uFF08\u5185\u5B58\u4E2D\uFF0C\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
       }
     });
     const clearBtn = btnRow.createEl("button", { text: "\u6E05\u9664" });
@@ -3128,7 +3557,7 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
         this.passwordInputEl.type = this.passwordInputEl.type === "password" ? "text" : "password";
       }
     };
-    new import_obsidian.Setting(containerEl).setName("\u4FDD\u5B58\u5BC6\u7801\u5230\u672C\u5730").setDesc("\u5C06\u5BC6\u7801\u4FDD\u5B58\u5230 Obsidian \u914D\u7F6E\u6587\u4EF6\u4E2D\uFF0C\u91CD\u542F\u540E\u4ECD\u6709\u6548\u3002\u5BC6\u7801\u4EE5\u660E\u6587\u5B58\u50A8\uFF0C\u8BF7\u8C28\u614E\u4F7F\u7528\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.savePassword).onChange((value) => __async(this, null, function* () {
+    new import_obsidian2.Setting(containerEl).setName("\u4FDD\u5B58\u5BC6\u7801\u5230\u672C\u5730").setDesc("\u5C06\u5BC6\u7801\u4FDD\u5B58\u5230 Obsidian \u914D\u7F6E\u6587\u4EF6\u4E2D\uFF0C\u91CD\u542F\u540E\u4ECD\u6709\u6548\u3002\u5BC6\u7801\u4EE5\u660E\u6587\u5B58\u50A8\uFF0C\u8BF7\u8C28\u614E\u4F7F\u7528\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.savePassword).onChange((value) => __async(this, null, function* () {
       this.plugin.settings.savePassword = value;
       if (value && this.plugin.passwordManager.getPassword()) {
         this.plugin.settings.savedPassword = this.plugin.passwordManager.getPassword();
@@ -3146,7 +3575,6 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
       warnEl.setText("\u5BC6\u7801\u5DF2\u4FDD\u5B58\u5230 data.json\u3002\u4EFB\u4F55\u4EBA\u80FD\u8BBF\u95EE\u60A8\u7684 vault \u76EE\u5F55\u5373\u53EF\u8BFB\u53D6\u6B64\u5BC6\u7801\u3002");
     }
   }
-  // ── 状态更新 ──
   updatePasswordStatus() {
     if (!this.statusEl)
       return;
@@ -3188,8 +3616,8 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
 };
 
 // src/ui/PasswordModal.ts
-var import_obsidian2 = require("obsidian");
-var PasswordModal = class extends import_obsidian2.Modal {
+var import_obsidian3 = require("obsidian");
+var PasswordModal = class extends import_obsidian3.Modal {
   constructor(app) {
     super(app);
     this.password = "";
@@ -3243,12 +3671,12 @@ var PasswordModal = class extends import_obsidian2.Modal {
       this.resolve(this.password);
       this.close();
     };
-    new import_obsidian2.Setting(contentEl).setName("\u5BC6\u7801").addText((text) => {
+    new import_obsidian3.Setting(contentEl).setName("\u5BC6\u7801").addText((text) => {
       text.setPlaceholder("\u8F93\u5165\u4E3B\u5BC6\u7801").setValue(this.password).onChange((value) => this.password = value);
       text.inputEl.type = "password";
       return text;
     });
-    new import_obsidian2.Setting(contentEl).setName("\u786E\u8BA4\u5BC6\u7801").addText((text) => {
+    new import_obsidian3.Setting(contentEl).setName("\u786E\u8BA4\u5BC6\u7801").addText((text) => {
       text.setPlaceholder("\u518D\u6B21\u8F93\u5165\u4E3B\u5BC6\u7801").setValue(this.confirmPassword).onChange((value) => this.confirmPassword = value);
       text.inputEl.type = "password";
       text.inputEl.addEventListener("keydown", (e) => {
@@ -3259,7 +3687,7 @@ var PasswordModal = class extends import_obsidian2.Modal {
       });
       return text;
     });
-    new import_obsidian2.Setting(contentEl).addButton((btn) => btn.setButtonText("\u786E\u8BA4").setCta().onClick(() => submitHandler())).addButton((btn) => btn.setButtonText("\u53D6\u6D88").onClick(() => {
+    new import_obsidian3.Setting(contentEl).addButton((btn) => btn.setButtonText("\u786E\u8BA4").setCta().onClick(() => submitHandler())).addButton((btn) => btn.setButtonText("\u53D6\u6D88").onClick(() => {
       this.resolve(null);
       this.close();
     }));
@@ -3271,8 +3699,8 @@ var PasswordModal = class extends import_obsidian2.Modal {
 };
 
 // src/ui/EditModal.ts
-var import_obsidian3 = require("obsidian");
-var EditModal = class extends import_obsidian3.Modal {
+var import_obsidian4 = require("obsidian");
+var EditModal = class extends import_obsidian4.Modal {
   constructor(app, initialText, hint) {
     super(app);
     this.textareaEl = null;
@@ -3310,7 +3738,7 @@ var EditModal = class extends import_obsidian3.Modal {
     this.textareaEl.style.padding = "8px";
     this.textareaEl.style.fontFamily = "var(--font-monospace)";
     this.textareaEl.style.resize = "vertical";
-    new import_obsidian3.Setting(contentEl).addButton((btn) => btn.setButtonText("\u4FDD\u5B58\u4E3A\u52A0\u5BC6").setCta().onClick(() => {
+    new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("\u4FDD\u5B58\u4E3A\u52A0\u5BC6").setCta().onClick(() => {
       var _a;
       this.resolve({
         action: "save-encrypted",
@@ -3336,7 +3764,7 @@ var EditModal = class extends import_obsidian3.Modal {
 };
 
 // src/processors/reading-view.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var ReadingViewProcessor = class {
   constructor(app, encryptionService, passwordManager, decryptCache, plugin) {
     this.app = app;
@@ -3421,7 +3849,7 @@ var ReadingViewProcessor = class {
       const password = yield modal.openAndGetPassword();
       if (password) {
         this.passwordManager.setPassword(password);
-        new import_obsidian4.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
+        new import_obsidian5.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
       }
     });
   }
@@ -3438,7 +3866,7 @@ var ReadingViewProcessor = class {
     wrapper.style.position = "relative";
     const tracked = this.trackedElements.get(el);
     const sourcePath = (_a = tracked == null ? void 0 : tracked.sourcePath) != null ? _a : "";
-    import_obsidian4.MarkdownRenderer.render(
+    import_obsidian5.MarkdownRenderer.render(
       this.app,
       text,
       wrapper,
@@ -3489,7 +3917,7 @@ var ReadingViewProcessor = class {
 };
 
 // src/processors/cm6-extension.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var import_state = require("@codemirror/state");
 var import_view = require("@codemirror/view");
 var recomputeEffect = import_state.StateEffect.define();
@@ -3614,7 +4042,7 @@ var DecryptedMarkdownWidget = class extends import_view.WidgetType {
     this.container.style.width = "100%";
     if (!this.rendered) {
       this.rendered = true;
-      import_obsidian5.MarkdownRenderer.render(
+      import_obsidian6.MarkdownRenderer.render(
         this.app,
         this.decryptedText,
         this.container,
@@ -3638,7 +4066,7 @@ var DecryptedMarkdownWidget = class extends import_view.WidgetType {
 };
 
 // main.ts
-var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
+var AgeEncryptPlugin = class extends import_obsidian7.Plugin {
   onload() {
     return __async(this, null, function* () {
       yield this.loadSettings();
@@ -3679,7 +4107,7 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
               this.settings.savedPassword = password;
               yield this.saveSettings();
             }
-            new import_obsidian6.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
+            new import_obsidian7.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
           }
         })
       });
@@ -3689,13 +4117,13 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
         editorCallback: (editor, _view) => __async(this, null, function* () {
           const selection = editor.getSelection();
           if (!selection) {
-            new import_obsidian6.Notice("\u8BF7\u5148\u9009\u4E2D\u8981\u52A0\u5BC6\u7684\u6587\u672C");
+            new import_obsidian7.Notice("\u8BF7\u5148\u9009\u4E2D\u8981\u52A0\u5BC6\u7684\u6587\u672C");
             return;
           }
           const password = this.passwordManager.getPassword();
           const recipient = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
           if (!password && !recipient) {
-            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
+            new import_obsidian7.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           try {
@@ -3711,9 +4139,9 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
               finalBlock += "\n";
             }
             editor.replaceSelection(finalBlock);
-            new import_obsidian6.Notice("\u6BB5\u843D\u5DF2\u52A0\u5BC6");
+            new import_obsidian7.Notice("\u6BB5\u843D\u5DF2\u52A0\u5BC6");
           } catch (error) {
-            new import_obsidian6.Notice("\u52A0\u5BC6\u5931\u8D25");
+            new import_obsidian7.Notice("\u52A0\u5BC6\u5931\u8D25");
           }
         })
       });
@@ -3723,13 +4151,13 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
         callback: () => __async(this, null, function* () {
           const activeFile = this.app.workspace.getActiveFile();
           if (!activeFile) {
-            new import_obsidian6.Notice("\u6CA1\u6709\u6253\u5F00\u7684\u6587\u4EF6");
+            new import_obsidian7.Notice("\u6CA1\u6709\u6253\u5F00\u7684\u6587\u4EF6");
             return;
           }
           const password = this.passwordManager.getPassword();
           const recipient = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
           if (!password && !recipient) {
-            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
+            new import_obsidian7.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           try {
@@ -3754,9 +4182,9 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
               finalContent += "\n";
             }
             yield this.app.vault.modify(activeFile, finalContent);
-            new import_obsidian6.Notice("\u6587\u4EF6\u5DF2\u52A0\u5BC6");
+            new import_obsidian7.Notice("\u6587\u4EF6\u5DF2\u52A0\u5BC6");
           } catch (error) {
-            new import_obsidian6.Notice("\u52A0\u5BC6\u5931\u8D25");
+            new import_obsidian7.Notice("\u52A0\u5BC6\u5931\u8D25");
           }
         })
       });
@@ -3767,7 +4195,7 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
           const password = this.passwordManager.getPassword();
           const identity = this.passwordManager.getIdentity();
           if (!password && !identity) {
-            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
+            new import_obsidian7.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           const doc = editor.getValue();
@@ -3797,7 +4225,7 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
             }
           }
           if (blockStart === -1 || blockEnd === -1) {
-            new import_obsidian6.Notice("\u5149\u6807\u9644\u8FD1\u672A\u627E\u5230\u52A0\u5BC6\u5757");
+            new import_obsidian7.Notice("\u5149\u6807\u9644\u8FD1\u672A\u627E\u5230\u52A0\u5BC6\u5757");
             return;
           }
           const blockLines = lines.slice(blockStart, blockEnd + 1);
@@ -3824,15 +4252,15 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
               const newLines = doc.split("\n");
               newLines.splice(blockStart, blockEnd - blockStart + 1, newBlock);
               editor.setValue(newLines.join("\n"));
-              new import_obsidian6.Notice("\u5185\u5BB9\u5DF2\u91CD\u65B0\u52A0\u5BC6");
+              new import_obsidian7.Notice("\u5185\u5BB9\u5DF2\u91CD\u65B0\u52A0\u5BC6");
             } else if (result.action === "save-plaintext") {
               const newLines = doc.split("\n");
               newLines.splice(blockStart, blockEnd - blockStart + 1, result.text);
               editor.setValue(newLines.join("\n"));
-              new import_obsidian6.Notice("\u5DF2\u4FDD\u5B58\u4E3A\u7EAF\u6587\u672C");
+              new import_obsidian7.Notice("\u5DF2\u4FDD\u5B58\u4E3A\u7EAF\u6587\u672C");
             }
           } catch (error) {
-            new import_obsidian6.Notice("\u89E3\u5BC6\u5931\u8D25");
+            new import_obsidian7.Notice("\u89E3\u5BC6\u5931\u8D25");
           }
         })
       });
