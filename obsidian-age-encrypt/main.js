@@ -2571,6 +2571,26 @@ var __awaiter3 = function(thisArg, _arguments, P, generator) {
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
 };
+function generateIdentity() {
+  const scalar = randomBytes(32);
+  const identity = bech32.encode("AGE-SECRET-KEY-", bech32.toWords(scalar)).toUpperCase();
+  return Promise.resolve(identity);
+}
+function identityToRecipient(identity) {
+  return __awaiter3(this, void 0, void 0, function* () {
+    let scalar;
+    if (isCryptoKey2(identity)) {
+      scalar = identity;
+    } else {
+      const res = bech32.decodeToBytes(identity);
+      if (!identity.startsWith("AGE-SECRET-KEY-1") || res.prefix.toUpperCase() !== "AGE-SECRET-KEY-" || res.bytes.length !== 32)
+        throw Error("invalid identity");
+      scalar = res.bytes;
+    }
+    const recipient = yield scalarMultBase(scalar);
+    return bech32.encode("age", bech32.toWords(recipient));
+  });
+}
 var Encrypter = class {
   constructor() {
     this.passphrase = null;
@@ -2723,7 +2743,13 @@ var EncryptionService = class {
     return __async(this, null, function* () {
       try {
         const encrypter = new Encrypter();
-        encrypter.setPassphrase(options.password);
+        if (options.recipient) {
+          encrypter.addRecipient(options.recipient);
+        } else if (options.password) {
+          encrypter.setPassphrase(options.password);
+        } else {
+          throw new Error("No encryption credential provided");
+        }
         const encryptedArray = yield encrypter.encrypt(content);
         return this.arrayBufferToBase64(encryptedArray);
       } catch (error) {
@@ -2732,11 +2758,14 @@ var EncryptionService = class {
       }
     });
   }
-  decrypt(encryptedContent, password) {
+  decrypt(encryptedContent, password, identity) {
     return __async(this, null, function* () {
       try {
         const decrypter = new Decrypter();
-        decrypter.addPassphrase(password);
+        if (password)
+          decrypter.addPassphrase(password);
+        if (identity)
+          decrypter.addIdentity(identity);
         const encryptedArray = this.base64ToArrayBuffer(encryptedContent);
         return yield decrypter.decrypt(encryptedArray, "text");
       } catch (error) {
@@ -2745,6 +2774,20 @@ var EncryptionService = class {
       }
     });
   }
+  // ── 密钥对生成 ──
+  generateKeyPair() {
+    return __async(this, null, function* () {
+      const identity = yield generateIdentity();
+      const recipient = yield identityToRecipient(identity);
+      return { identity, recipient };
+    });
+  }
+  identityToRecipient(identity) {
+    return __async(this, null, function* () {
+      return yield identityToRecipient(identity);
+    });
+  }
+  // ── 块格式 ──
   formatEncryptedBlock(encryptedContent, hint) {
     const block = [
       "```age",
@@ -2784,8 +2827,10 @@ var EncryptionService = class {
 var PasswordManager = class {
   constructor() {
     this.password = null;
+    this.identity = null;
     this.listeners = /* @__PURE__ */ new Map();
   }
+  // ── 密码管理 ──
   setPassword(password) {
     this.password = password;
     this.emit("changed");
@@ -2800,6 +2845,31 @@ var PasswordManager = class {
   isPasswordSet() {
     return this.password !== null;
   }
+  // ── 密钥管理 ──
+  setIdentity(identity) {
+    this.identity = identity;
+    this.emit("changed");
+  }
+  getIdentity() {
+    return this.identity;
+  }
+  clearIdentity() {
+    this.identity = null;
+    this.emit("cleared");
+  }
+  isIdentitySet() {
+    return this.identity !== null;
+  }
+  hasAnyCredential() {
+    return this.password !== null || this.identity !== null;
+  }
+  // ── 统一清理 ──
+  clearAll() {
+    this.password = null;
+    this.identity = null;
+    this.emit("cleared");
+  }
+  // ── 事件系统 ──
   on(event, cb) {
     if (!this.listeners.has(event)) {
       this.listeners.set(event, /* @__PURE__ */ new Set());
@@ -2859,7 +2929,9 @@ var DecryptCache = class {
 var DEFAULT_SETTINGS = {
   excludeFrontmatter: true,
   autoDecryptOnLoad: true,
-  showEditIndicator: true
+  showEditIndicator: true,
+  encryptionMode: "password",
+  savePassword: false
 };
 
 // src/ui/SettingsTab.ts
@@ -2869,18 +2941,159 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     super(app, plugin);
     this.passwordInput = "";
     this.passwordInputEl = null;
-    this.passwordDescEl = null;
+    this.identityInputEl = null;
+    this.statusEl = null;
     this.plugin = plugin;
   }
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h3", { text: "Master Password" });
-    const passwordDesc = containerEl.createDiv();
-    passwordDesc.style.marginBottom = "8px";
-    this.updatePasswordStatus(passwordDesc);
-    const passwordSetting = new import_obsidian.Setting(containerEl).setName("Password").setDesc("Enter your master password. Password is stored in memory only and never saved to disk.").addText((text) => {
-      text.setPlaceholder("Enter master password").onChange((value) => this.passwordInput = value);
+    containerEl.createEl("h2", { text: "Age Encrypt \u8BBE\u7F6E" });
+    containerEl.createEl("h3", { text: "\u52A0\u5BC6\u65B9\u5F0F" });
+    new import_obsidian.Setting(containerEl).setName("\u52A0\u5BC6\u6A21\u5F0F").setDesc("\u9009\u62E9\u4F7F\u7528\u5BC6\u7801\u52A0\u5BC6\u8FD8\u662F\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u3002\u5BC6\u94A5\u5BF9\u52A0\u5BC6\u66F4\u5B89\u5168\uFF0C\u4E14\u4E0D\u53D7\u91CD\u542F\u5F71\u54CD\u3002").addDropdown((dropdown) => dropdown.addOption("password", "\u5BC6\u7801\u52A0\u5BC6").addOption("key", "\u5BC6\u94A5\u52A0\u5BC6\uFF08\u63A8\u8350\uFF09").setValue(this.plugin.settings.encryptionMode).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.encryptionMode = value;
+      yield this.plugin.saveSettings();
+      this.display();
+    })));
+    if (this.plugin.settings.encryptionMode === "key") {
+      this.renderKeyModeUI(containerEl);
+    } else {
+      this.renderPasswordModeUI(containerEl);
+    }
+    containerEl.createEl("hr");
+    containerEl.createEl("h3", { text: "\u89E3\u5BC6\u8BBE\u7F6E" });
+    new import_obsidian.Setting(containerEl).setName("\u81EA\u52A8\u89E3\u5BC6").setDesc("\u5BC6\u7801\u6216\u5BC6\u94A5\u5DF2\u52A0\u8F7D\u65F6\uFF0C\u81EA\u52A8\u89E3\u5BC6\u6240\u6709\u52A0\u5BC6\u5757").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoDecryptOnLoad).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.autoDecryptOnLoad = value;
+      yield this.plugin.saveSettings();
+    })));
+    new import_obsidian.Setting(containerEl).setName("\u663E\u793A\u7F16\u8F91\u63D0\u793A").setDesc("\u60AC\u505C\u89E3\u5BC6\u540E\u7684\u5185\u5BB9\u65F6\uFF0C\u663E\u793A\u4E00\u4E2A\u5FAE\u5C0F\u7684\u7F16\u8F91\u6309\u94AE").addToggle((toggle) => toggle.setValue(this.plugin.settings.showEditIndicator).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.showEditIndicator = value;
+      yield this.plugin.saveSettings();
+    })));
+    new import_obsidian.Setting(containerEl).setName("\u6392\u9664 Frontmatter").setDesc("\u52A0\u5BC6\u6574\u6587\u4EF6\u65F6\uFF0C\u4E0D\u52A0\u5BC6 YAML \u524D\u7F6E\u5143\u6570\u636E").addToggle((toggle) => toggle.setValue(this.plugin.settings.excludeFrontmatter).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.excludeFrontmatter = value;
+      yield this.plugin.saveSettings();
+    })));
+  }
+  // ── 密钥模式 UI ──
+  renderKeyModeUI(containerEl) {
+    this.statusEl = containerEl.createDiv();
+    this.statusEl.style.marginBottom = "12px";
+    this.updateKeyStatus();
+    const keyBox = containerEl.createDiv();
+    keyBox.style.background = "var(--background-secondary)";
+    keyBox.style.padding = "12px";
+    keyBox.style.borderRadius = "6px";
+    keyBox.style.marginBottom = "12px";
+    keyBox.createEl("strong", { text: "\u79C1\u94A5\uFF08Identity\uFF09" });
+    const keyInfo = keyBox.createDiv();
+    keyInfo.style.fontSize = "0.85em";
+    keyInfo.style.color = "var(--text-muted)";
+    keyInfo.style.marginTop = "4px";
+    keyInfo.setText("\u79C1\u94A5\u7528\u4E8E\u89E3\u5BC6\u3002\u5C06\u79C1\u94A5\u7C98\u8D34\u5230\u4E0B\u65B9\u8F93\u5165\u6846\uFF0C\u6216\u70B9\u51FB\u751F\u6210\u65B0\u5BC6\u94A5\u5BF9\u3002");
+    this.identityInputEl = keyBox.createEl("textarea", {
+      attr: { placeholder: "\u7C98\u8D34 AGE-SECRET-KEY-1... \u79C1\u94A5" }
+    });
+    this.identityInputEl.style.width = "100%";
+    this.identityInputEl.style.minHeight = "60px";
+    this.identityInputEl.style.marginTop = "8px";
+    this.identityInputEl.style.fontFamily = "var(--font-monospace)";
+    this.identityInputEl.style.fontSize = "12px";
+    const keyBtnRow = keyBox.createDiv();
+    keyBtnRow.style.display = "flex";
+    keyBtnRow.style.gap = "8px";
+    keyBtnRow.style.marginTop = "8px";
+    keyBtnRow.style.flexWrap = "wrap";
+    const loadKeyBtn = keyBtnRow.createEl("button", { text: "\u52A0\u8F7D\u79C1\u94A5", cls: "mod-cta" });
+    loadKeyBtn.onclick = () => __async(this, null, function* () {
+      var _a;
+      const identity = (_a = this.identityInputEl) == null ? void 0 : _a.value.trim();
+      if (!identity || !identity.startsWith("AGE-SECRET-KEY-1")) {
+        new import_obsidian.Notice("\u79C1\u94A5\u683C\u5F0F\u65E0\u6548\uFF0C\u5E94\u4EE5 AGE-SECRET-KEY-1 \u5F00\u5934");
+        return;
+      }
+      try {
+        yield this.plugin.encryptionService.identityToRecipient(identity);
+        this.plugin.passwordManager.setIdentity(identity);
+        if (this.identityInputEl)
+          this.identityInputEl.value = "";
+        this.updateKeyStatus();
+        new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u52A0\u8F7D\uFF08\u5185\u5B58\u4E2D\uFF0C\u4EC5\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
+      } catch (e) {
+        new import_obsidian.Notice("\u79C1\u94A5\u65E0\u6548\uFF0C\u8BF7\u68C0\u67E5\u540E\u91CD\u8BD5");
+      }
+    });
+    const genBtn = keyBtnRow.createEl("button", { text: "\u751F\u6210\u65B0\u5BC6\u94A5\u5BF9" });
+    genBtn.onclick = () => __async(this, null, function* () {
+      try {
+        const pair = yield this.plugin.encryptionService.generateKeyPair();
+        this.plugin.passwordManager.setIdentity(pair.identity);
+        this.plugin.settings.recipientKey = pair.recipient;
+        yield this.plugin.saveSettings();
+        const resultBox = containerEl.createDiv();
+        resultBox.style.margin = "12px 0";
+        resultBox.style.padding = "12px";
+        resultBox.style.border = "1px solid var(--interactive-accent)";
+        resultBox.style.borderRadius = "6px";
+        resultBox.createEl("strong", { text: "\u5BC6\u94A5\u5BF9\u5DF2\u751F\u6210" });
+        const identEl = resultBox.createDiv();
+        identEl.style.marginTop = "8px";
+        identEl.style.wordBreak = "break-all";
+        identEl.style.fontFamily = "var(--font-monospace)";
+        identEl.style.fontSize = "12px";
+        identEl.innerHTML = `<strong>\u79C1\u94A5\uFF08\u8BF7\u59A5\u5584\u4FDD\u5B58\uFF01\uFF09</strong><br>${pair.identity}`;
+        const recipEl = resultBox.createDiv();
+        recipEl.style.marginTop = "8px";
+        recipEl.style.wordBreak = "break-all";
+        recipEl.style.fontFamily = "var(--font-monospace)";
+        recipEl.style.fontSize = "12px";
+        recipEl.innerHTML = `<strong>\u516C\u94A5\uFF08\u5DF2\u4FDD\u5B58\u5230\u8BBE\u7F6E\uFF09</strong><br>${pair.recipient}`;
+        const warn = resultBox.createDiv();
+        warn.style.marginTop = "8px";
+        warn.style.color = "var(--text-warning)";
+        warn.style.fontSize = "0.85em";
+        warn.setText("\u79C1\u94A5\u4EC5\u5B58\u50A8\u5728\u5185\u5B58\u4E2D\u3002\u8BF7\u7ACB\u5373\u590D\u5236\u79C1\u94A5\u5E76\u4FDD\u5B58\u5230\u5B89\u5168\u4F4D\u7F6E\uFF0C\u5173\u95ED\u6B64\u9875\u9762\u540E\u5C06\u65E0\u6CD5\u518D\u6B21\u67E5\u770B\u3002");
+        const copyBtn = resultBox.createEl("button", { text: "\u590D\u5236\u79C1\u94A5\u5230\u526A\u8D34\u677F" });
+        copyBtn.style.marginTop = "8px";
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(pair.identity);
+          new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u590D\u5236");
+        };
+        this.updateKeyStatus();
+        new import_obsidian.Notice("\u5BC6\u94A5\u5BF9\u5DF2\u751F\u6210");
+      } catch (e) {
+        new import_obsidian.Notice("\u751F\u6210\u5BC6\u94A5\u5BF9\u5931\u8D25");
+      }
+    });
+    if (this.plugin.settings.recipientKey) {
+      const recipInfo = keyBox.createDiv();
+      recipInfo.style.marginTop = "8px";
+      recipInfo.style.fontSize = "0.85em";
+      recipInfo.style.color = "var(--text-muted)";
+      recipInfo.style.wordBreak = "break-all";
+      recipInfo.innerHTML = `<strong>\u5DF2\u914D\u7F6E\u516C\u94A5\uFF1A</strong><br>${this.plugin.settings.recipientKey}`;
+      const clearRecipBtn = keyBtnRow.createEl("button", { text: "\u6E05\u9664\u516C\u94A5" });
+      clearRecipBtn.onclick = () => __async(this, null, function* () {
+        this.plugin.settings.recipientKey = void 0;
+        yield this.plugin.saveSettings();
+        new import_obsidian.Notice("\u516C\u94A5\u5DF2\u6E05\u9664");
+        this.display();
+      });
+    }
+    const clearIdentityBtn = keyBtnRow.createEl("button", { text: "\u6E05\u9664\u5185\u5B58\u4E2D\u7684\u79C1\u94A5" });
+    clearIdentityBtn.onclick = () => {
+      this.plugin.passwordManager.clearIdentity();
+      this.updateKeyStatus();
+      new import_obsidian.Notice("\u79C1\u94A5\u5DF2\u4ECE\u5185\u5B58\u6E05\u9664");
+    };
+  }
+  // ── 密码模式 UI ──
+  renderPasswordModeUI(containerEl) {
+    this.statusEl = containerEl.createDiv();
+    this.statusEl.style.marginBottom = "8px";
+    this.updatePasswordStatus();
+    const passwordSetting = new import_obsidian.Setting(containerEl).setName("\u4E3B\u5BC6\u7801").setDesc("\u8BBE\u7F6E\u7528\u4E8E\u52A0\u5BC6\u548C\u89E3\u5BC6\u7684\u4E3B\u5BC6\u7801\u3002\u5BC6\u7801\u4EC5\u5B58\u50A8\u5728\u5185\u5B58\u4E2D\uFF08\u9664\u975E\u52FE\u9009\u4E0B\u65B9\u4FDD\u5B58\u9009\u9879\uFF09\u3002").addText((text) => {
+      text.setPlaceholder("\u8F93\u5165\u4E3B\u5BC6\u7801").onChange((value) => this.passwordInput = value);
       text.inputEl.type = "password";
       this.passwordInputEl = text.inputEl;
       return text;
@@ -2890,53 +3103,86 @@ var AgeEncryptSettingTab = class extends import_obsidian.PluginSettingTab {
     btnRow.style.display = "flex";
     btnRow.style.gap = "8px";
     btnRow.style.marginTop = "8px";
-    const setBtn = btnRow.createEl("button", { text: "Set", cls: "mod-cta" });
+    const setBtn = btnRow.createEl("button", { text: "\u8BBE\u7F6E", cls: "mod-cta" });
     setBtn.onclick = () => __async(this, null, function* () {
       if (this.passwordInput) {
         this.plugin.passwordManager.setPassword(this.passwordInput);
         if (this.passwordInputEl)
           this.passwordInputEl.value = "";
         this.passwordInput = "";
-        this.updatePasswordStatus(passwordDesc);
-        new import_obsidian.Notice("Master password set for this session");
+        this.updatePasswordStatus();
+        new import_obsidian.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E\uFF08\u5185\u5B58\u4E2D\uFF0C\u672C\u6B21\u4F1A\u8BDD\u6709\u6548\uFF09");
       }
     });
-    const clearBtn = btnRow.createEl("button", { text: "Clear" });
+    const clearBtn = btnRow.createEl("button", { text: "\u6E05\u9664" });
     clearBtn.onclick = () => __async(this, null, function* () {
       this.plugin.passwordManager.clearPassword();
       this.passwordInput = "";
       if (this.passwordInputEl)
         this.passwordInputEl.value = "";
-      this.updatePasswordStatus(passwordDesc);
+      this.updatePasswordStatus();
     });
-    const togglePasswordBtn = btnRow.createEl("button", { text: "Show/Hide" });
-    togglePasswordBtn.onclick = () => {
+    const togglePwBtn = btnRow.createEl("button", { text: "\u663E\u793A/\u9690\u85CF" });
+    togglePwBtn.onclick = () => {
       if (this.passwordInputEl) {
         this.passwordInputEl.type = this.passwordInputEl.type === "password" ? "text" : "password";
       }
     };
-    containerEl.createEl("hr");
-    new import_obsidian.Setting(containerEl).setName("Exclude frontmatter from encryption").setDesc('If enabled, the YAML frontmatter will not be encrypted when using the "Encrypt file" command.').addToggle((toggle) => toggle.setValue(this.plugin.settings.excludeFrontmatter).onChange((value) => __async(this, null, function* () {
-      this.plugin.settings.excludeFrontmatter = value;
+    new import_obsidian.Setting(containerEl).setName("\u4FDD\u5B58\u5BC6\u7801\u5230\u672C\u5730").setDesc("\u5C06\u5BC6\u7801\u4FDD\u5B58\u5230 Obsidian \u914D\u7F6E\u6587\u4EF6\u4E2D\uFF0C\u91CD\u542F\u540E\u4ECD\u6709\u6548\u3002\u5BC6\u7801\u4EE5\u660E\u6587\u5B58\u50A8\uFF0C\u8BF7\u8C28\u614E\u4F7F\u7528\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.savePassword).onChange((value) => __async(this, null, function* () {
+      this.plugin.settings.savePassword = value;
+      if (value && this.plugin.passwordManager.getPassword()) {
+        this.plugin.settings.savedPassword = this.plugin.passwordManager.getPassword();
+      } else if (!value) {
+        this.plugin.settings.savedPassword = void 0;
+      }
       yield this.plugin.saveSettings();
+      this.updatePasswordStatus();
     })));
-    new import_obsidian.Setting(containerEl).setName("Auto-decrypt on load").setDesc("When master password is set, automatically decrypt all encrypted blocks without manual interaction.").addToggle((toggle) => toggle.setValue(this.plugin.settings.autoDecryptOnLoad).onChange((value) => __async(this, null, function* () {
-      this.plugin.settings.autoDecryptOnLoad = value;
-      yield this.plugin.saveSettings();
-    })));
-    new import_obsidian.Setting(containerEl).setName("Show edit indicator").setDesc("Show a subtle edit button on hover over decrypted content blocks.").addToggle((toggle) => toggle.setValue(this.plugin.settings.showEditIndicator).onChange((value) => __async(this, null, function* () {
-      this.plugin.settings.showEditIndicator = value;
-      yield this.plugin.saveSettings();
-    })));
+    if (this.plugin.settings.savePassword) {
+      const warnEl = containerEl.createDiv();
+      warnEl.style.color = "var(--text-warning)";
+      warnEl.style.fontSize = "0.85em";
+      warnEl.style.padding = "4px 0 8px 0";
+      warnEl.setText("\u5BC6\u7801\u5DF2\u4FDD\u5B58\u5230 data.json\u3002\u4EFB\u4F55\u4EBA\u80FD\u8BBF\u95EE\u60A8\u7684 vault \u76EE\u5F55\u5373\u53EF\u8BFB\u53D6\u6B64\u5BC6\u7801\u3002");
+    }
   }
-  updatePasswordStatus(el) {
-    this.passwordDescEl = el;
-    if (this.plugin.passwordManager.isPasswordSet()) {
-      el.setText("Status: Password is set for this session");
-      el.style.color = "var(--color-green)";
+  // ── 状态更新 ──
+  updatePasswordStatus() {
+    if (!this.statusEl)
+      return;
+    const pwSet = this.plugin.passwordManager.isPasswordSet();
+    const saved = this.plugin.settings.savePassword;
+    if (pwSet && saved) {
+      this.statusEl.setText("\u5BC6\u7801\u5DF2\u8BBE\u7F6E\uFF08\u5185\u5B58 + \u5DF2\u6301\u4E45\u5316\u5230 data.json\uFF0C\u91CD\u542F\u540E\u6709\u6548\uFF09");
+      this.statusEl.style.color = "var(--color-green)";
+    } else if (pwSet) {
+      this.statusEl.setText("\u5BC6\u7801\u5DF2\u8BBE\u7F6E\uFF08\u4EC5\u5185\u5B58\uFF0C\u91CD\u542F\u540E\u5931\u6548\uFF09");
+      this.statusEl.style.color = "var(--color-green)";
+    } else if (saved && this.plugin.settings.savedPassword) {
+      this.statusEl.setText("\u5BC6\u7801\u5DF2\u6301\u4E45\u5316\u5230\u672C\u5730\uFF0C\u4F46\u672A\u52A0\u8F7D\u5230\u5185\u5B58\u3002\u8BF7\u8BBE\u7F6E\u5BC6\u7801\u4EE5\u6FC0\u6D3B\u89E3\u5BC6\u3002");
+      this.statusEl.style.color = "var(--text-warning)";
     } else {
-      el.setText("Status: No password configured");
-      el.style.color = "var(--text-muted)";
+      this.statusEl.setText("\u672A\u8BBE\u7F6E\u5BC6\u7801");
+      this.statusEl.style.color = "var(--text-muted)";
+    }
+  }
+  updateKeyStatus() {
+    if (!this.statusEl)
+      return;
+    const idSet = this.plugin.passwordManager.isIdentitySet();
+    const hasRecipient = !!this.plugin.settings.recipientKey;
+    if (idSet && hasRecipient) {
+      this.statusEl.setText("\u79C1\u94A5\u5DF2\u52A0\u8F7D\uFF08\u5185\u5B58\uFF09\uFF0C\u516C\u94A5\u5DF2\u4FDD\u5B58\u3002\u53EF\u4EE5\u52A0\u5BC6\u548C\u89E3\u5BC6\u3002");
+      this.statusEl.style.color = "var(--color-green)";
+    } else if (idSet) {
+      this.statusEl.setText("\u79C1\u94A5\u5DF2\u52A0\u8F7D\uFF08\u5185\u5B58\uFF09\uFF0C\u4F46\u672A\u914D\u7F6E\u516C\u94A5\u3002\u53EA\u80FD\u89E3\u5BC6\u65E0\u6CD5\u52A0\u5BC6\u3002");
+      this.statusEl.style.color = "var(--text-warning)";
+    } else if (hasRecipient) {
+      this.statusEl.setText("\u516C\u94A5\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u79C1\u94A5\u672A\u52A0\u8F7D\u3002\u53EA\u80FD\u52A0\u5BC6\u65E0\u6CD5\u89E3\u5BC6\u3002");
+      this.statusEl.style.color = "var(--text-warning)";
+    } else {
+      this.statusEl.setText("\u672A\u914D\u7F6E\u5BC6\u94A5");
+      this.statusEl.style.color = "var(--text-muted)";
     }
   }
 };
@@ -2961,7 +3207,7 @@ var PasswordModal = class extends import_obsidian2.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h2", { text: "Enter master password" });
+    contentEl.createEl("h2", { text: "\u8F93\u5165\u4E3B\u5BC6\u7801" });
     const showError = (message) => {
       if (this.errorEl) {
         this.errorEl.textContent = message;
@@ -2983,32 +3229,27 @@ var PasswordModal = class extends import_obsidian2.Modal {
     const submitHandler = () => {
       clearError();
       if (!this.password) {
-        showError("Password is required");
+        showError("\u8BF7\u8F93\u5165\u5BC6\u7801");
         return;
       }
       if (!this.confirmPassword) {
-        showError("Please confirm your password");
+        showError("\u8BF7\u786E\u8BA4\u5BC6\u7801");
         return;
       }
       if (this.password !== this.confirmPassword) {
-        showError("Passwords do not match");
+        showError("\u4E24\u6B21\u8F93\u5165\u7684\u5BC6\u7801\u4E0D\u4E00\u81F4");
         return;
       }
       this.resolve(this.password);
       this.close();
     };
-    new import_obsidian2.Setting(contentEl).setName("Password").addText((text) => {
-      text.setPlaceholder("Enter master password").setValue(this.password).onChange((value) => this.password = value);
+    new import_obsidian2.Setting(contentEl).setName("\u5BC6\u7801").addText((text) => {
+      text.setPlaceholder("\u8F93\u5165\u4E3B\u5BC6\u7801").setValue(this.password).onChange((value) => this.password = value);
       text.inputEl.type = "password";
-      text.inputEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-        }
-      });
       return text;
     });
-    new import_obsidian2.Setting(contentEl).setName("Confirm password").addText((text) => {
-      text.setPlaceholder("Confirm master password").setValue(this.confirmPassword).onChange((value) => this.confirmPassword = value);
+    new import_obsidian2.Setting(contentEl).setName("\u786E\u8BA4\u5BC6\u7801").addText((text) => {
+      text.setPlaceholder("\u518D\u6B21\u8F93\u5165\u4E3B\u5BC6\u7801").setValue(this.confirmPassword).onChange((value) => this.confirmPassword = value);
       text.inputEl.type = "password";
       text.inputEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
@@ -3018,7 +3259,7 @@ var PasswordModal = class extends import_obsidian2.Modal {
       });
       return text;
     });
-    new import_obsidian2.Setting(contentEl).addButton((btn) => btn.setButtonText("Set").setCta().onClick(() => submitHandler())).addButton((btn) => btn.setButtonText("Cancel").onClick(() => {
+    new import_obsidian2.Setting(contentEl).addButton((btn) => btn.setButtonText("\u786E\u8BA4").setCta().onClick(() => submitHandler())).addButton((btn) => btn.setButtonText("\u53D6\u6D88").onClick(() => {
       this.resolve(null);
       this.close();
     }));
@@ -3050,10 +3291,10 @@ var EditModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("age-encrypt-edit-modal");
-    contentEl.createEl("h2", { text: "Edit encrypted content" });
+    contentEl.createEl("h2", { text: "\u7F16\u8F91\u52A0\u5BC6\u5185\u5BB9" });
     if (this.hint) {
       const hintEl = contentEl.createEl("p", {
-        text: `Hint: ${this.hint}`,
+        text: `\u63D0\u793A: ${this.hint}`,
         cls: "age-encrypt-hint"
       });
       hintEl.style.color = "var(--text-muted)";
@@ -3069,21 +3310,21 @@ var EditModal = class extends import_obsidian3.Modal {
     this.textareaEl.style.padding = "8px";
     this.textareaEl.style.fontFamily = "var(--font-monospace)";
     this.textareaEl.style.resize = "vertical";
-    new import_obsidian3.Setting(contentEl).addButton((btn) => btn.setButtonText("Save encrypted").setCta().onClick(() => {
+    new import_obsidian3.Setting(contentEl).addButton((btn) => btn.setButtonText("\u4FDD\u5B58\u4E3A\u52A0\u5BC6").setCta().onClick(() => {
       var _a;
       this.resolve({
         action: "save-encrypted",
         text: ((_a = this.textareaEl) == null ? void 0 : _a.value) || ""
       });
       this.close();
-    })).addButton((btn) => btn.setButtonText("Save as plain text").onClick(() => {
+    })).addButton((btn) => btn.setButtonText("\u4FDD\u5B58\u4E3A\u7EAF\u6587\u672C").onClick(() => {
       var _a;
       this.resolve({
         action: "save-plaintext",
         text: ((_a = this.textareaEl) == null ? void 0 : _a.value) || ""
       });
       this.close();
-    })).addButton((btn) => btn.setButtonText("Cancel").onClick(() => {
+    })).addButton((btn) => btn.setButtonText("\u53D6\u6D88").onClick(() => {
       this.resolve(null);
       this.close();
     }));
@@ -3123,7 +3364,7 @@ var ReadingViewProcessor = class {
       try {
         encryptedData = this.encryptionService.parseEncryptedBlock(source);
       } catch (_e) {
-        this.renderError(el, "Invalid encrypted block format");
+        this.renderError(el, "\u52A0\u5BC6\u5757\u683C\u5F0F\u65E0\u6548");
         return;
       }
       const cacheKey = DecryptCache.cacheKey(encryptedData.content);
@@ -3134,8 +3375,8 @@ var ReadingViewProcessor = class {
         hint: encryptedData.hint,
         sourcePath
       });
-      const password = this.passwordManager.getPassword();
-      if (!password) {
+      const hasCredential = this.passwordManager.hasAnyCredential();
+      if (!hasCredential) {
         this.renderPasswordRequired(el, encryptedData.hint);
         return;
       }
@@ -3146,7 +3387,13 @@ var ReadingViewProcessor = class {
       }
       this.renderLoading(el);
       try {
-        const decrypted = yield this.encryptionService.decrypt(encryptedData.content, password);
+        const password = this.passwordManager.getPassword() || void 0;
+        const identity = this.passwordManager.getIdentity() || void 0;
+        const decrypted = yield this.encryptionService.decrypt(
+          encryptedData.content,
+          password,
+          identity
+        );
         this.decryptCache.set(cacheKey, decrypted);
         this.renderDecrypted(el, decrypted);
       } catch (_error) {
@@ -3157,14 +3404,14 @@ var ReadingViewProcessor = class {
   renderPasswordRequired(el, hint) {
     el.empty();
     el.addClass("age-encrypt-placeholder");
-    const title = el.createDiv({ text: "Encrypted content" });
+    const title = el.createDiv({ text: "\u52A0\u5BC6\u5185\u5BB9" });
     title.style.fontWeight = "600";
     title.style.marginBottom = "4px";
-    const sub = el.createDiv({ text: "Click to enter decryption password" });
+    const sub = el.createDiv({ text: "\u70B9\u51FB\u8F93\u5165\u5BC6\u7801\u52A0\u8F7D\u51ED\u8BC1" });
     sub.style.fontSize = "0.9em";
     sub.style.color = "var(--text-muted)";
     if (hint) {
-      const hintEl = el.createDiv({ text: `Hint: ${hint}` });
+      const hintEl = el.createDiv({ text: `\u63D0\u793A: ${hint}` });
       hintEl.style.fontSize = "0.85em";
       hintEl.style.color = "var(--text-faint)";
       hintEl.style.marginTop = "4px";
@@ -3174,14 +3421,14 @@ var ReadingViewProcessor = class {
       const password = yield modal.openAndGetPassword();
       if (password) {
         this.passwordManager.setPassword(password);
-        new import_obsidian4.Notice("Master password set");
+        new import_obsidian4.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
       }
     });
   }
   renderLoading(el) {
     el.empty();
     el.addClass("age-encrypt-loading");
-    el.createDiv({ text: "Decrypting..." });
+    el.createDiv({ text: "\u89E3\u5BC6\u4E2D..." });
   }
   renderDecrypted(el, text) {
     var _a;
@@ -3202,14 +3449,14 @@ var ReadingViewProcessor = class {
   renderDecryptionError(el, hint) {
     el.empty();
     el.addClass("age-encrypt-error-block");
-    el.createDiv({ text: "Failed to decrypt content" });
+    el.createDiv({ text: "\u89E3\u5BC6\u5931\u8D25" });
     const sub = el.createDiv({
-      text: "Invalid password or corrupted data"
+      text: "\u5BC6\u7801\u9519\u8BEF\u3001\u5BC6\u94A5\u4E0D\u5339\u914D\u6216\u6570\u636E\u5DF2\u635F\u574F"
     });
     sub.style.fontSize = "0.9em";
     sub.style.marginTop = "4px";
     const retryBtn = el.createEl("button", {
-      text: "Retry",
+      text: "\u91CD\u8BD5",
       cls: "age-encrypt-retry-btn"
     });
     retryBtn.style.marginTop = "8px";
@@ -3236,7 +3483,6 @@ var ReadingViewProcessor = class {
       this.processBlock(data.source, el);
     }
   }
-  /** Clean up tracking for a specific element */
   untrackElement(el) {
     this.trackedElements.delete(el);
   }
@@ -3285,20 +3531,20 @@ var SourceModeExtension = class {
     ];
   }
   computeDecorations(state) {
-    const password = this.passwordManager.getPassword();
-    if (!password)
+    if (!this.passwordManager.hasAnyCredential())
       return import_view.Decoration.none;
     const blocks = this.findAgeBlocks(state);
     if (blocks.length === 0)
       return import_view.Decoration.none;
     const decorations = [];
+    const password = this.passwordManager.getPassword() || void 0;
+    const identity = this.passwordManager.getIdentity() || void 0;
     for (const block of blocks) {
-      const decrypted = this.tryGetDecryptedText(block, password);
+      const decrypted = this.tryGetDecryptedText(block, password, identity);
       if (decrypted === null)
         continue;
-      if (decrypted === void 0) {
+      if (decrypted === void 0)
         continue;
-      }
       decorations.push(
         import_view.Decoration.replace({
           widget: new DecryptedMarkdownWidget(
@@ -3326,7 +3572,7 @@ var SourceModeExtension = class {
     }
     return blocks;
   }
-  tryGetDecryptedText(block, password) {
+  tryGetDecryptedText(block, password, identity) {
     try {
       const { content } = this.encryptionService.parseEncryptedBlock(block.text);
       const cacheKey = DecryptCache.cacheKey(content);
@@ -3334,7 +3580,7 @@ var SourceModeExtension = class {
       if (cached !== null) {
         return cached;
       }
-      this.encryptionService.decrypt(content, password).then((decrypted) => {
+      this.encryptionService.decrypt(content, password, identity).then((decrypted) => {
         this.decryptCache.set(cacheKey, decrypted);
         for (const view of this.views) {
           view.dispatch({ effects: recomputeEffect.of() });
@@ -3377,7 +3623,7 @@ var DecryptedMarkdownWidget = class extends import_view.WidgetType {
       ).then(() => {
         view.requestMeasure();
       }).catch(() => {
-        this.container.textContent = "[Decryption render error]";
+        this.container.textContent = "[\u89E3\u5BC6\u6E32\u67D3\u9519\u8BEF]";
         view.requestMeasure();
       });
     }
@@ -3399,6 +3645,11 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
       this.passwordManager = new PasswordManager();
       this.decryptCache = new DecryptCache();
       this.encryptionService = new EncryptionService();
+      if (this.settings.savePassword && this.settings.savedPassword) {
+        this.passwordManager.setPassword(this.settings.savedPassword);
+      }
+      if (this.settings.encryptionMode === "key" && this.settings.recipientKey) {
+      }
       this.addSettingTab(new AgeEncryptSettingTab(this.app, this));
       this.readingViewProcessor = new ReadingViewProcessor(
         this.app,
@@ -3418,32 +3669,40 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
       this.registerEditorExtension(this.cm6Extension.createExtension());
       this.addCommand({
         id: "set-password",
-        name: "Set master password",
+        name: "\u8BBE\u7F6E\u4E3B\u5BC6\u7801",
         callback: () => __async(this, null, function* () {
           const modal = new PasswordModal(this.app);
           const password = yield modal.openAndGetPassword();
           if (password) {
             this.passwordManager.setPassword(password);
-            new import_obsidian6.Notice("Master password set");
+            if (this.settings.savePassword) {
+              this.settings.savedPassword = password;
+              yield this.saveSettings();
+            }
+            new import_obsidian6.Notice("\u4E3B\u5BC6\u7801\u5DF2\u8BBE\u7F6E");
           }
         })
       });
       this.addCommand({
         id: "encrypt-section",
-        name: "Encrypt selection",
+        name: "\u52A0\u5BC6\u9009\u4E2D\u6BB5\u843D",
         editorCallback: (editor, _view) => __async(this, null, function* () {
           const selection = editor.getSelection();
           if (!selection) {
-            new import_obsidian6.Notice("No text selected");
+            new import_obsidian6.Notice("\u8BF7\u5148\u9009\u4E2D\u8981\u52A0\u5BC6\u7684\u6587\u672C");
             return;
           }
           const password = this.passwordManager.getPassword();
-          if (!password) {
-            new import_obsidian6.Notice('Please set master password first (Settings tab or "Set master password" command)');
+          const recipient = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
+          if (!password && !recipient) {
+            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           try {
-            const encrypted = yield this.encryptionService.encrypt(selection, { password });
+            const encrypted = yield this.encryptionService.encrypt(selection, {
+              password: password || void 0,
+              recipient
+            });
             const formattedBlock = this.encryptionService.formatEncryptedBlock(encrypted);
             const endOfSelection = editor.posToOffset(editor.getCursor("to"));
             const endOfFile = editor.getValue().length;
@@ -3452,24 +3711,25 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
               finalBlock += "\n";
             }
             editor.replaceSelection(finalBlock);
-            new import_obsidian6.Notice("Selection encrypted");
+            new import_obsidian6.Notice("\u6BB5\u843D\u5DF2\u52A0\u5BC6");
           } catch (error) {
-            new import_obsidian6.Notice("Failed to encrypt selection");
+            new import_obsidian6.Notice("\u52A0\u5BC6\u5931\u8D25");
           }
         })
       });
       this.addCommand({
         id: "encrypt-file",
-        name: "Encrypt file",
+        name: "\u52A0\u5BC6\u6574\u4E2A\u6587\u4EF6",
         callback: () => __async(this, null, function* () {
           const activeFile = this.app.workspace.getActiveFile();
           if (!activeFile) {
-            new import_obsidian6.Notice("No active file");
+            new import_obsidian6.Notice("\u6CA1\u6709\u6253\u5F00\u7684\u6587\u4EF6");
             return;
           }
           const password = this.passwordManager.getPassword();
-          if (!password) {
-            new import_obsidian6.Notice("Please set master password first");
+          const recipient = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
+          if (!password && !recipient) {
+            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           try {
@@ -3484,26 +3744,30 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
                 contentToEncrypt = fileContent.substring(frontmatter.length).trimEnd();
               }
             }
-            const encrypted = yield this.encryptionService.encrypt(contentToEncrypt, { password });
+            const encrypted = yield this.encryptionService.encrypt(contentToEncrypt, {
+              password: password || void 0,
+              recipient
+            });
             const formattedBlock = this.encryptionService.formatEncryptedBlock(encrypted);
             let finalContent = frontmatter + formattedBlock;
             if (contentToEncrypt.length > 0 && !contentToEncrypt.endsWith("\n")) {
               finalContent += "\n";
             }
             yield this.app.vault.modify(activeFile, finalContent);
-            new import_obsidian6.Notice("File encrypted successfully");
+            new import_obsidian6.Notice("\u6587\u4EF6\u5DF2\u52A0\u5BC6");
           } catch (error) {
-            new import_obsidian6.Notice("Failed to encrypt file");
+            new import_obsidian6.Notice("\u52A0\u5BC6\u5931\u8D25");
           }
         })
       });
       this.addCommand({
         id: "edit-encrypted",
-        name: "Edit encrypted block",
+        name: "\u7F16\u8F91\u52A0\u5BC6\u5757",
         editorCallback: (editor, _view) => __async(this, null, function* () {
           const password = this.passwordManager.getPassword();
-          if (!password) {
-            new import_obsidian6.Notice("Please set master password first");
+          const identity = this.passwordManager.getIdentity();
+          if (!password && !identity) {
+            new import_obsidian6.Notice("\u8BF7\u5148\u5728\u8BBE\u7F6E\u9875\u9762\u914D\u7F6E\u5BC6\u7801\u6216\u5BC6\u94A5");
             return;
           }
           const doc = editor.getValue();
@@ -3512,7 +3776,6 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
           const lines = doc.split("\n");
           let blockStart = -1;
           let blockEnd = -1;
-          let lineOffset = 0;
           for (let i = 0; i < lines.length; i++) {
             if (lines[i].trimStart().startsWith("```age")) {
               blockStart = i;
@@ -3534,37 +3797,42 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
             }
           }
           if (blockStart === -1 || blockEnd === -1) {
-            new import_obsidian6.Notice("No encrypted block found near cursor");
+            new import_obsidian6.Notice("\u5149\u6807\u9644\u8FD1\u672A\u627E\u5230\u52A0\u5BC6\u5757");
             return;
           }
           const blockLines = lines.slice(blockStart, blockEnd + 1);
           const blockSource = blockLines.join("\n");
           try {
             const { content, hint } = this.encryptionService.parseEncryptedBlock(blockSource);
-            const decrypted = yield this.encryptionService.decrypt(content, password);
+            const decrypted = yield this.encryptionService.decrypt(
+              content,
+              password || void 0,
+              identity || void 0
+            );
             const modal = new EditModal(this.app, decrypted, hint);
             const result = yield modal.openAndGetResult();
             if (!result)
               return;
+            const password2 = this.passwordManager.getPassword();
+            const recipient2 = this.settings.encryptionMode === "key" ? this.settings.recipientKey : void 0;
             if (result.action === "save-encrypted") {
-              const encrypted = yield this.encryptionService.encrypt(result.text, { password });
+              const encrypted = yield this.encryptionService.encrypt(result.text, {
+                password: password2 || void 0,
+                recipient: recipient2
+              });
               const newBlock = this.encryptionService.formatEncryptedBlock(encrypted, hint);
-              const lineStart = blockStart;
-              const lineCount = blockEnd - blockStart + 1;
               const newLines = doc.split("\n");
-              newLines.splice(lineStart, lineCount, newBlock);
+              newLines.splice(blockStart, blockEnd - blockStart + 1, newBlock);
               editor.setValue(newLines.join("\n"));
-              new import_obsidian6.Notice("Content re-encrypted");
+              new import_obsidian6.Notice("\u5185\u5BB9\u5DF2\u91CD\u65B0\u52A0\u5BC6");
             } else if (result.action === "save-plaintext") {
-              const lineStart = blockStart;
-              const lineCount = blockEnd - blockStart + 1;
               const newLines = doc.split("\n");
-              newLines.splice(lineStart, lineCount, result.text);
+              newLines.splice(blockStart, blockEnd - blockStart + 1, result.text);
               editor.setValue(newLines.join("\n"));
-              new import_obsidian6.Notice("Saved as plain text");
+              new import_obsidian6.Notice("\u5DF2\u4FDD\u5B58\u4E3A\u7EAF\u6587\u672C");
             }
           } catch (error) {
-            new import_obsidian6.Notice("Failed to decrypt block");
+            new import_obsidian6.Notice("\u89E3\u5BC6\u5931\u8D25");
           }
         })
       });
@@ -3572,11 +3840,20 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
         this.decryptCache.clear();
         this.readingViewProcessor.rerenderAll();
         this.cm6Extension.invalidateDecryptions();
+        if (this.settings.savePassword) {
+          const pw = this.passwordManager.getPassword();
+          this.settings.savedPassword = pw || void 0;
+          this.saveSettings();
+        }
       });
       this.passwordManager.on("cleared", () => {
         this.decryptCache.clear();
         this.readingViewProcessor.rerenderAll();
         this.cm6Extension.invalidateDecryptions();
+        if (this.settings.savePassword) {
+          this.settings.savedPassword = void 0;
+          this.saveSettings();
+        }
       });
     });
   }
@@ -3592,7 +3869,7 @@ var AgeEncryptPlugin = class extends import_obsidian6.Plugin {
   }
   onunload() {
     this.passwordManager.removeAllListeners();
-    this.passwordManager.clearPassword();
+    this.passwordManager.clearAll();
     this.decryptCache.clear();
   }
 };

@@ -1,7 +1,8 @@
-import { Encrypter, Decrypter } from "age-encryption";
+import { Encrypter, Decrypter, generateIdentity, identityToRecipient } from "age-encryption";
 
 export interface EncryptionOptions {
-    password: string;
+    password?: string;
+    recipient?: string;
 }
 
 export interface EncryptedBlock {
@@ -29,7 +30,17 @@ export class EncryptionService {
     async encrypt(content: string, options: EncryptionOptions): Promise<string> {
         try {
             const encrypter = new Encrypter();
-            encrypter.setPassphrase(options.password);
+
+            if (options.recipient) {
+                // 密钥模式加密
+                encrypter.addRecipient(options.recipient);
+            } else if (options.password) {
+                // 密码模式加密
+                encrypter.setPassphrase(options.password);
+            } else {
+                throw new Error('No encryption credential provided');
+            }
+
             const encryptedArray = await encrypter.encrypt(content);
             return this.arrayBufferToBase64(encryptedArray);
         } catch (error: unknown) {
@@ -38,10 +49,12 @@ export class EncryptionService {
         }
     }
 
-    async decrypt(encryptedContent: string, password: string): Promise<string> {
+    async decrypt(encryptedContent: string, password?: string, identity?: string): Promise<string> {
         try {
             const decrypter = new Decrypter();
-            decrypter.addPassphrase(password);
+            if (password) decrypter.addPassphrase(password);
+            if (identity) decrypter.addIdentity(identity);
+
             const encryptedArray = this.base64ToArrayBuffer(encryptedContent);
             return await decrypter.decrypt(encryptedArray, "text");
         } catch (error: unknown) {
@@ -49,6 +62,20 @@ export class EncryptionService {
             throw new Error(error instanceof Error ? error.message : 'Failed to decrypt content');
         }
     }
+
+    // ── 密钥对生成 ──
+
+    async generateKeyPair(): Promise<{ identity: string; recipient: string }> {
+        const identity = await generateIdentity();
+        const recipient = await identityToRecipient(identity);
+        return { identity, recipient };
+    }
+
+    async identityToRecipient(identity: string): Promise<string> {
+        return await identityToRecipient(identity);
+    }
+
+    // ── 块格式 ──
 
     formatEncryptedBlock(encryptedContent: string, hint?: string): string {
         const block = [

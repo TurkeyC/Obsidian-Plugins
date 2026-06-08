@@ -31,9 +31,20 @@ export default class AgeEncryptPlugin extends Plugin {
         this.decryptCache = new DecryptCache();
         this.encryptionService = new EncryptionService();
 
+        // 恢复持久化的密码
+        if (this.settings.savePassword && this.settings.savedPassword) {
+            this.passwordManager.setPassword(this.settings.savedPassword);
+        }
+
+        // 自动加载密钥（如果有配置）
+        if (this.settings.encryptionMode === 'key' && this.settings.recipientKey) {
+            // 密钥模式：私钥需要在设置页面手动加载
+            // 仅公钥持久化，私钥保持内存加载
+        }
+
         this.addSettingTab(new AgeEncryptSettingTab(this.app, this));
 
-        // Register Reading View processor
+        // 注册 Reading View 处理器
         this.readingViewProcessor = new ReadingViewProcessor(
             this.app,
             this.encryptionService,
@@ -43,7 +54,7 @@ export default class AgeEncryptPlugin extends Plugin {
         );
         this.readingViewProcessor.register();
 
-        // Register CM6 extension for Source Mode
+        // 注册 CM6 Source Mode 扩展
         this.cm6Extension = new SourceModeExtension(
             this.app,
             this.encryptionService,
@@ -53,38 +64,52 @@ export default class AgeEncryptPlugin extends Plugin {
         );
         this.registerEditorExtension(this.cm6Extension.createExtension());
 
-        // Register commands
+        // ── 命令注册 ──
+
         this.addCommand({
             id: 'set-password',
-            name: 'Set master password',
+            name: '设置主密码',
             callback: async () => {
                 const modal = new PasswordModal(this.app);
                 const password = await modal.openAndGetPassword();
                 if (password) {
                     this.passwordManager.setPassword(password);
-                    new Notice('Master password set');
+                    // 如果启用了持久化，同步保存
+                    if (this.settings.savePassword) {
+                        this.settings.savedPassword = password;
+                        await this.saveSettings();
+                    }
+                    new Notice('主密码已设置');
                 }
             }
         });
 
         this.addCommand({
             id: 'encrypt-section',
-            name: 'Encrypt selection',
+            name: '加密选中段落',
             editorCallback: async (editor: Editor, _view: MarkdownView) => {
                 const selection = editor.getSelection();
                 if (!selection) {
-                    new Notice('No text selected');
+                    new Notice('请先选中要加密的文本');
                     return;
                 }
 
+                // 获取加密凭据
                 const password = this.passwordManager.getPassword();
-                if (!password) {
-                    new Notice('Please set master password first (Settings tab or "Set master password" command)');
+                const recipient = (this.settings.encryptionMode === 'key')
+                    ? this.settings.recipientKey
+                    : undefined;
+
+                if (!password && !recipient) {
+                    new Notice('请先在设置页面配置密码或密钥');
                     return;
                 }
 
                 try {
-                    const encrypted = await this.encryptionService.encrypt(selection, { password });
+                    const encrypted = await this.encryptionService.encrypt(selection, {
+                        password: password || undefined,
+                        recipient
+                    });
                     const formattedBlock = this.encryptionService.formatEncryptedBlock(encrypted);
 
                     const endOfSelection = editor.posToOffset(editor.getCursor('to'));
@@ -95,26 +120,30 @@ export default class AgeEncryptPlugin extends Plugin {
                     }
 
                     editor.replaceSelection(finalBlock);
-                    new Notice('Selection encrypted');
+                    new Notice('段落已加密');
                 } catch (error) {
-                    new Notice('Failed to encrypt selection');
+                    new Notice('加密失败');
                 }
             }
         });
 
         this.addCommand({
             id: 'encrypt-file',
-            name: 'Encrypt file',
+            name: '加密整个文件',
             callback: async () => {
                 const activeFile = this.app.workspace.getActiveFile();
                 if (!activeFile) {
-                    new Notice('No active file');
+                    new Notice('没有打开的文件');
                     return;
                 }
 
                 const password = this.passwordManager.getPassword();
-                if (!password) {
-                    new Notice('Please set master password first');
+                const recipient = (this.settings.encryptionMode === 'key')
+                    ? this.settings.recipientKey
+                    : undefined;
+
+                if (!password && !recipient) {
+                    new Notice('请先在设置页面配置密码或密钥');
                     return;
                 }
 
@@ -132,7 +161,10 @@ export default class AgeEncryptPlugin extends Plugin {
                         }
                     }
 
-                    const encrypted = await this.encryptionService.encrypt(contentToEncrypt, { password });
+                    const encrypted = await this.encryptionService.encrypt(contentToEncrypt, {
+                        password: password || undefined,
+                        recipient
+                    });
                     const formattedBlock = this.encryptionService.formatEncryptedBlock(encrypted);
 
                     let finalContent = frontmatter + formattedBlock;
@@ -141,20 +173,22 @@ export default class AgeEncryptPlugin extends Plugin {
                     }
 
                     await this.app.vault.modify(activeFile, finalContent);
-                    new Notice('File encrypted successfully');
+                    new Notice('文件已加密');
                 } catch (error) {
-                    new Notice('Failed to encrypt file');
+                    new Notice('加密失败');
                 }
             }
         });
 
         this.addCommand({
             id: 'edit-encrypted',
-            name: 'Edit encrypted block',
+            name: '编辑加密块',
             editorCallback: async (editor: Editor, _view: MarkdownView) => {
                 const password = this.passwordManager.getPassword();
-                if (!password) {
-                    new Notice('Please set master password first');
+                const identity = this.passwordManager.getIdentity();
+
+                if (!password && !identity) {
+                    new Notice('请先在设置页面配置密码或密钥');
                     return;
                 }
 
@@ -163,14 +197,12 @@ export default class AgeEncryptPlugin extends Plugin {
                 const offset = editor.posToOffset(cursor);
                 const lines = doc.split('\n');
 
-                // Find the nearest ```age block around the cursor
+                // 查找光标所在的 ```age 块
                 let blockStart = -1;
                 let blockEnd = -1;
-                let lineOffset = 0;
                 for (let i = 0; i < lines.length; i++) {
                     if (lines[i].trimStart().startsWith('```age')) {
                         blockStart = i;
-                        // Find closing ```
                         for (let j = i + 1; j < lines.length; j++) {
                             if (lines[j].trimStart() === '```') {
                                 blockEnd = j;
@@ -178,7 +210,6 @@ export default class AgeEncryptPlugin extends Plugin {
                             }
                         }
                         if (blockEnd !== -1) {
-                            // Check if cursor is within this block's line range
                             const blockStartOffset = lines.slice(0, blockStart).join('\n').length + (blockStart > 0 ? 1 : 0);
                             const blockEndOffset = lines.slice(0, blockEnd + 1).join('\n').length;
                             if (offset >= blockStartOffset && offset <= blockEndOffset) {
@@ -191,7 +222,7 @@ export default class AgeEncryptPlugin extends Plugin {
                 }
 
                 if (blockStart === -1 || blockEnd === -1) {
-                    new Notice('No encrypted block found near cursor');
+                    new Notice('光标附近未找到加密块');
                     return;
                 }
 
@@ -200,47 +231,67 @@ export default class AgeEncryptPlugin extends Plugin {
 
                 try {
                     const { content, hint } = this.encryptionService.parseEncryptedBlock(blockSource);
-                    const decrypted = await this.encryptionService.decrypt(content, password);
+                    const decrypted = await this.encryptionService.decrypt(
+                        content,
+                        password || undefined,
+                        identity || undefined
+                    );
 
                     const modal = new EditModal(this.app, decrypted, hint);
                     const result = await modal.openAndGetResult();
-
                     if (!result) return;
 
+                    const password2 = this.passwordManager.getPassword();
+                    const recipient2 = (this.settings.encryptionMode === 'key')
+                        ? this.settings.recipientKey
+                        : undefined;
+
                     if (result.action === 'save-encrypted') {
-                        const encrypted = await this.encryptionService.encrypt(result.text, { password });
+                        const encrypted = await this.encryptionService.encrypt(result.text, {
+                            password: password2 || undefined,
+                            recipient: recipient2
+                        });
                         const newBlock = this.encryptionService.formatEncryptedBlock(encrypted, hint);
-                        const lineStart = blockStart;
-                        const lineCount = blockEnd - blockStart + 1;
                         const newLines = doc.split('\n');
-                        newLines.splice(lineStart, lineCount, newBlock);
+                        newLines.splice(blockStart, blockEnd - blockStart + 1, newBlock);
                         editor.setValue(newLines.join('\n'));
-                        new Notice('Content re-encrypted');
+                        new Notice('内容已重新加密');
                     } else if (result.action === 'save-plaintext') {
-                        const lineStart = blockStart;
-                        const lineCount = blockEnd - blockStart + 1;
                         const newLines = doc.split('\n');
-                        newLines.splice(lineStart, lineCount, result.text);
+                        newLines.splice(blockStart, blockEnd - blockStart + 1, result.text);
                         editor.setValue(newLines.join('\n'));
-                        new Notice('Saved as plain text');
+                        new Notice('已保存为纯文本');
                     }
                 } catch (error) {
-                    new Notice('Failed to decrypt block');
+                    new Notice('解密失败');
                 }
             }
         });
 
-        // React to password changes
+        // ── 密码变更事件响应 ──
         this.passwordManager.on('changed', () => {
             this.decryptCache.clear();
             this.readingViewProcessor.rerenderAll();
             this.cm6Extension.invalidateDecryptions();
+
+            // 同步保存密码
+            if (this.settings.savePassword) {
+                const pw = this.passwordManager.getPassword();
+                this.settings.savedPassword = pw || undefined;
+                this.saveSettings();
+            }
         });
 
         this.passwordManager.on('cleared', () => {
             this.decryptCache.clear();
             this.readingViewProcessor.rerenderAll();
             this.cm6Extension.invalidateDecryptions();
+
+            // 同步清除持久化密码
+            if (this.settings.savePassword) {
+                this.settings.savedPassword = undefined;
+                this.saveSettings();
+            }
         });
     }
 
@@ -254,7 +305,7 @@ export default class AgeEncryptPlugin extends Plugin {
 
     onunload(): void {
         this.passwordManager.removeAllListeners();
-        this.passwordManager.clearPassword();
+        this.passwordManager.clearAll();
         this.decryptCache.clear();
     }
 }

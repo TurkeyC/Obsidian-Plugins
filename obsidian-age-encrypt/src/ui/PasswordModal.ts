@@ -20,7 +20,7 @@ export class PasswordModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.empty();
-        contentEl.createEl('h2', { text: 'Enter master password' });
+        contentEl.createEl('h2', { text: '输入主密码' });
 
         const showError = (message: string) => {
             if (this.errorEl) {
@@ -46,17 +46,17 @@ export class PasswordModal extends Modal {
             clearError();
 
             if (!this.password) {
-                showError('Password is required');
+                showError('请输入密码');
                 return;
             }
 
             if (!this.confirmPassword) {
-                showError('Please confirm your password');
+                showError('请确认密码');
                 return;
             }
 
             if (this.password !== this.confirmPassword) {
-                showError('Passwords do not match');
+                showError('两次输入的密码不一致');
                 return;
             }
 
@@ -65,27 +65,21 @@ export class PasswordModal extends Modal {
         };
 
         new Setting(contentEl)
-            .setName('Password')
+            .setName('密码')
             .addText(text => {
                 text
-                    .setPlaceholder('Enter master password')
+                    .setPlaceholder('输入主密码')
                     .setValue(this.password)
                     .onChange(value => this.password = value);
                 text.inputEl.type = 'password';
-                text.inputEl.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') {
-                        e.preventDefault();
-                        // Move focus to confirm field or submit
-                    }
-                });
                 return text;
             });
 
         new Setting(contentEl)
-            .setName('Confirm password')
+            .setName('确认密码')
             .addText(text => {
                 text
-                    .setPlaceholder('Confirm master password')
+                    .setPlaceholder('再次输入主密码')
                     .setValue(this.confirmPassword)
                     .onChange(value => this.confirmPassword = value);
                 text.inputEl.type = 'password';
@@ -100,11 +94,11 @@ export class PasswordModal extends Modal {
 
         new Setting(contentEl)
             .addButton(btn => btn
-                .setButtonText('Set')
+                .setButtonText('确认')
                 .setCta()
                 .onClick(() => submitHandler()))
             .addButton(btn => btn
-                .setButtonText('Cancel')
+                .setButtonText('取消')
                 .onClick(() => {
                     this.resolve(null);
                     this.close();

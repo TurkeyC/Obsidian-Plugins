@@ -1,5 +1,5 @@
 import { App, Component, MarkdownRenderer } from 'obsidian';
-import { StateField, StateEffect, Extension, EditorState, StateCommand } from '@codemirror/state';
+import { StateField, StateEffect, Extension, EditorState } from '@codemirror/state';
 import { Decoration, DecorationSet, WidgetType, EditorView, ViewPlugin } from '@codemirror/view';
 import { EncryptionService } from '../services/encryption';
 import { PasswordManager } from '../services/password-manager';
@@ -44,7 +44,6 @@ export class SourceModeExtension {
                     return Decoration.none;
                 },
                 update(deco: DecorationSet, tr: any): DecorationSet {
-                    // Quick check: if document doesn't contain ```age, skip
                     if (!tr.state.sliceDoc(0, Math.min(tr.state.doc.length, 200)).includes('```age')) {
                         return Decoration.none;
                     }
@@ -69,21 +68,19 @@ export class SourceModeExtension {
     }
 
     private computeDecorations(state: EditorState): DecorationSet {
-        const password = this.passwordManager.getPassword();
-        if (!password) return Decoration.none;
+        if (!this.passwordManager.hasAnyCredential()) return Decoration.none;
 
         const blocks = this.findAgeBlocks(state);
         if (blocks.length === 0) return Decoration.none;
 
         const decorations: any[] = [];
+        const password = this.passwordManager.getPassword() || undefined;
+        const identity = this.passwordManager.getIdentity() || undefined;
 
         for (const block of blocks) {
-            const decrypted = this.tryGetDecryptedText(block, password);
+            const decrypted = this.tryGetDecryptedText(block, password, identity);
             if (decrypted === null) continue;
-            if (decrypted === undefined) {
-                // Cache miss - decrypt needs to happen async, leave raw source for now
-                continue;
-            }
+            if (decrypted === undefined) continue;
 
             decorations.push(
                 Decoration.replace({
@@ -103,7 +100,6 @@ export class SourceModeExtension {
     private findAgeBlocks(state: EditorState): AgeBlockRange[] {
         const doc = state.doc.toString();
         const blocks: AgeBlockRange[] = [];
-        // Match ```age ... ``` blocks
         const regex = /```age[\s\S]*?```/g;
         let match: RegExpExecArray | null;
 
@@ -120,7 +116,8 @@ export class SourceModeExtension {
 
     private tryGetDecryptedText(
         block: AgeBlockRange,
-        password: string
+        password?: string,
+        identity?: string
     ): string | null | undefined {
         try {
             const { content } = this.encryptionService.parseEncryptedBlock(block.text);
@@ -130,17 +127,13 @@ export class SourceModeExtension {
                 return cached;
             }
 
-            // Cache miss - trigger async decryption, return undefined
-            // to skip this block for now
-            this.encryptionService.decrypt(content, password).then(decrypted => {
+            // 异步解密，成功后触发重绘
+            this.encryptionService.decrypt(content, password, identity).then(decrypted => {
                 this.decryptCache.set(cacheKey, decrypted);
-                // Dispatch to all views to trigger re-render
                 for (const view of this.views) {
                     view.dispatch({ effects: recomputeEffect.of() });
                 }
-            }).catch(() => {
-                // Decryption failed, skip
-            });
+            }).catch(() => {});
 
             return undefined;
         } catch {
@@ -173,7 +166,6 @@ class DecryptedMarkdownWidget extends WidgetType {
         this.container.style.minHeight = '1em';
         this.container.style.width = '100%';
 
-        // Render decrypted markdown asynchronously
         if (!this.rendered) {
             this.rendered = true;
             MarkdownRenderer.render(
@@ -185,7 +177,7 @@ class DecryptedMarkdownWidget extends WidgetType {
             ).then(() => {
                 view.requestMeasure();
             }).catch(() => {
-                this.container!.textContent = '[Decryption render error]';
+                this.container!.textContent = '[解密渲染错误]';
                 view.requestMeasure();
             });
         }

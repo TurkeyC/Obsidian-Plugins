@@ -29,11 +29,11 @@ export class EditModal extends Modal {
         contentEl.empty();
         contentEl.addClass('age-encrypt-edit-modal');
 
-        contentEl.createEl('h2', { text: 'Edit encrypted content' });
+        contentEl.createEl('h2', { text: '编辑加密内容' });
 
         if (this.hint) {
             const hintEl = contentEl.createEl('p', {
-                text: `Hint: ${this.hint}`,
+                text: `提示: ${this.hint}`,
                 cls: 'age-encrypt-hint'
             });
             hintEl.style.color = 'var(--text-muted)';
@@ -53,7 +53,7 @@ export class EditModal extends Modal {
 
         new Setting(contentEl)
             .addButton(btn => btn
-                .setButtonText('Save encrypted')
+                .setButtonText('保存为加密')
                 .setCta()
                 .onClick(() => {
                     this.resolve({
@@ -63,7 +63,7 @@ export class EditModal extends Modal {
                     this.close();
                 }))
             .addButton(btn => btn
-                .setButtonText('Save as plain text')
+                .setButtonText('保存为纯文本')
                 .onClick(() => {
                     this.resolve({
                         action: 'save-plaintext',
@@ -72,7 +72,7 @@ export class EditModal extends Modal {
                     this.close();
                 }))
             .addButton(btn => btn
-                .setButtonText('Cancel')
+                .setButtonText('取消')
                 .onClick(() => {
                     this.resolve(null);
                     this.close();
