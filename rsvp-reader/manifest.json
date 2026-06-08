@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-rsvp-reader",
+  "name": "RSVP 速读增强",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "基于RSVP阅读法的速读增强插件，提升Obsidian知识管理场景下的阅读效率。",
+  "author": "TurkeyC",
+  "authorUrl": "https://github.com/turkeyc",
+  "isDesktopOnly": false
+}

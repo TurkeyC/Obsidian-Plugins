@@ -1,0 +1,9 @@
+{
+    "name": "age-decrypt-cli",
+    "version": "1.0.0",
+    "description": "CLI tool to decrypt obsidian-age-encrypt encrypted files",
+    "type": "module",
+    "dependencies": {
+        "age-encryption": "^0.2.0"
+    }
+}

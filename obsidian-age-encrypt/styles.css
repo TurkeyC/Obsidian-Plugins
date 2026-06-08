@@ -1,0 +1,112 @@
+/* ── State A: Password Required Placeholder ── */
+.age-encrypt-placeholder {
+    padding: 16px 20px;
+    margin: 12px 0;
+    background: var(--background-secondary);
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    text-align: center;
+    color: var(--text-muted);
+    transition: border-color 0.2s, background-color 0.2s;
+    user-select: none;
+}
+.age-encrypt-placeholder:hover {
+    border-color: var(--interactive-accent);
+    background: var(--background-secondary-alt);
+}
+
+/* ── State B: Loading ── */
+.age-encrypt-loading {
+    padding: 8px 16px;
+    margin: 8px 0;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9em;
+    animation: age-encrypt-pulse 1.5s ease-in-out infinite;
+}
+@keyframes age-encrypt-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* ── State C: Decrypted Content (transparent) ── */
+.age-decrypted-block {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    color: inherit;
+}
+
+/* Wrapper for decrypted content with optional edit indicator */
+.age-decrypted-wrapper {
+    position: relative;
+}
+.age-decrypted-wrapper > *:first-child {
+    margin-top: 0;
+}
+.age-decrypted-wrapper > *:last-child {
+    margin-bottom: 0;
+}
+
+/* ── State D: Decryption Error ── */
+.age-encrypt-error-block {
+    padding: 16px 20px;
+    margin: 12px 0;
+    background: var(--background-secondary);
+    border: 1px solid var(--text-error);
+    border-radius: 6px;
+    color: var(--text-error);
+    text-align: center;
+    font-size: 0.9em;
+}
+
+.age-encrypt-retry-btn {
+    margin-top: 8px;
+    padding: 4px 12px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+.age-encrypt-retry-btn:hover {
+    background: var(--interactive-accent-hover);
+}
+
+/* ── CM6 Widget (Source Mode) ── */
+.age-decrypted-inline {
+    display: block;
+    width: 100%;
+    min-height: 1em;
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    color: inherit;
+    cursor: default;
+}
+
+/* ── Edit Modal ── */
+.age-encrypt-edit-modal textarea {
+    width: 100%;
+    min-height: 200px;
+    font-family: var(--font-monospace);
+    font-size: 14px;
+    line-height: 1.5;
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+/* ── Settings Buttons Row ── */
+.age-encrypt-settings-buttons {
+    display: flex;
+    gap: 8px;
+}

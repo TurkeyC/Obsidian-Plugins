@@ -1,0 +1,10 @@
+{
+    "id": "age-encrypt",
+    "name": "Age Encrypt",
+    "version": "2.0.0",
+    "minAppVersion": "1.5.7",
+    "description": "Transparent content encryption using age. Set one master password, encrypt files or sections, and seamlessly view decrypted content in Obsidian GUI while files remain encrypted on disk.",
+    "author": "Metin Ur",
+    "authorUrl": "https://github.com/mr-1311",
+    "isDesktopOnly": false
+}
